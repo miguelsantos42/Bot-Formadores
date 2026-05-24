@@ -1,8 +1,19 @@
+import csv
+import json
+from io import StringIO
+
 from app import (
+    EXPORT_COLUMNS,
+    build_export_filename,
+    build_export_rows,
     build_score_components,
     build_search_run,
+    export_rows_to_csv,
+    export_rows_to_json,
+    extract_email_subject,
     format_optional,
     get_provider_label,
+    slugify,
 )
 from bot.config import Settings
 from bot.models import TrainingRequest
@@ -89,3 +100,79 @@ def test_build_score_components_returns_readable_component_names() -> None:
         "Credibilidade pública",
     }
     assert all(isinstance(value, int) for value in components.values())
+
+
+def test_build_export_rows_contains_shortlist_fields() -> None:
+    request = TrainingRequest(
+        tema_formacao="Python",
+        area_interna="Tecnologia",
+        descricao_contexto="Sessao interna para membros da JuniFEUP.",
+    )
+    search_run = build_search_run(request, settings=make_settings())
+
+    rows = build_export_rows(search_run)
+    first_row = rows[0]
+
+    assert rows
+    assert set(EXPORT_COLUMNS).issubset(first_row)
+    assert first_row["nome"]
+    assert first_row["canal_recomendado"] in {"email", "linkedin", "formulario"}
+    assert isinstance(first_row["score_total"], int)
+    assert first_row["email_inicial"]
+    assert first_row["mensagem_linkedin"]
+
+
+def test_export_rows_to_csv_uses_consistent_columns() -> None:
+    request = TrainingRequest(
+        tema_formacao="Python",
+        area_interna="Tecnologia",
+        descricao_contexto="Sessao interna para membros da JuniFEUP.",
+    )
+    search_run = build_search_run(request, settings=make_settings())
+    rows = build_export_rows(search_run)
+
+    csv_data = export_rows_to_csv(rows)
+    parsed_rows = list(csv.DictReader(StringIO(csv_data)))
+
+    assert parsed_rows
+    assert parsed_rows[0].keys() == set(EXPORT_COLUMNS)
+    assert parsed_rows[0]["nome"] == rows[0]["nome"]
+
+
+def test_export_rows_to_json_is_readable_and_structured() -> None:
+    request = TrainingRequest(
+        tema_formacao="Python",
+        area_interna="Tecnologia",
+        descricao_contexto="Sessao interna para membros da JuniFEUP.",
+    )
+    search_run = build_search_run(request, settings=make_settings())
+    rows = build_export_rows(search_run)
+
+    json_data = export_rows_to_json(rows)
+    parsed_rows = json.loads(json_data)
+
+    assert parsed_rows[0]["nome"] == rows[0]["nome"]
+    assert parsed_rows[0]["score_total"] == rows[0]["score_total"]
+
+
+def test_extract_email_subject_returns_subject_line() -> None:
+    subject = extract_email_subject(
+        "Assunto: Convite para sessão sobre Python\n\nOlá Ana,"
+    )
+
+    assert subject == "Convite para sessão sobre Python"
+
+
+def test_build_export_filename_uses_topic_slug() -> None:
+    request = TrainingRequest(
+        tema_formacao="Python para automação",
+        area_interna="Tecnologia",
+        descricao_contexto="Sessao interna para membros da JuniFEUP.",
+    )
+    search_run = build_search_run(request, settings=make_settings())
+
+    assert build_export_filename(search_run, "csv") == "bot-formadores-python-para-automação.csv"
+
+
+def test_slugify_has_safe_fallback() -> None:
+    assert slugify("   ") == "export"

@@ -1,5 +1,9 @@
 from typing import Any
 
+import csv
+import json
+from io import StringIO
+
 import streamlit as st
 from pydantic import ValidationError
 
@@ -34,6 +38,24 @@ PROFILE_TYPE_LABELS = {
     "article_or_post": "Artigo/post",
     "unknown": "Desconhecido",
 }
+
+
+EXPORT_COLUMNS = [
+    "nome",
+    "empresa",
+    "localizacao",
+    "links",
+    "email_publico",
+    "canal_recomendado",
+    "score_total",
+    "motivo_fit",
+    "assunto_email",
+    "email_inicial",
+    "mensagem_linkedin",
+    "source_domain",
+    "profile_type",
+    "matched_query",
+]
 
 
 def build_search_run(request: TrainingRequest, settings: Settings | None = None) -> SearchRun:
@@ -87,6 +109,72 @@ def build_score_components(result: CandidateResult) -> dict[str, int]:
         "Contactabilidade": score.contactabilidade,
         "Credibilidade pública": score.credibilidade_publica,
     }
+
+
+def build_export_rows(search_run: SearchRun) -> list[dict[str, Any]]:
+    return [
+        build_export_row(result)
+        for result in search_run.resultados
+    ]
+
+
+def build_export_row(result: CandidateResult) -> dict[str, Any]:
+    scored_candidate = result.candidato_classificado
+    candidate = scored_candidate.candidato
+    score = scored_candidate.score
+
+    return {
+        "nome": candidate.nome,
+        "empresa": candidate.empresa,
+        "localizacao": candidate.localizacao,
+        "links": "; ".join(str(link.url) for link in candidate.links),
+        "email_publico": candidate.email_publico,
+        "canal_recomendado": scored_candidate.canal_recomendado.value,
+        "score_total": score.score_total,
+        "motivo_fit": score.motivo,
+        "assunto_email": extract_email_subject(result.mensagens.email_inicial),
+        "email_inicial": result.mensagens.email_inicial,
+        "mensagem_linkedin": result.mensagens.mensagem_linkedin,
+        "source_domain": candidate.source_domain,
+        "profile_type": candidate.profile_type.value,
+        "matched_query": candidate.matched_query,
+    }
+
+
+def export_rows_to_csv(rows: list[dict[str, Any]]) -> str:
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=EXPORT_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
+
+
+def export_rows_to_json(rows: list[dict[str, Any]]) -> str:
+    return json.dumps(rows, ensure_ascii=False, indent=2)
+
+
+def extract_email_subject(email_text: str) -> str:
+    first_line = email_text.splitlines()[0] if email_text else ""
+    prefix = "Assunto:"
+
+    if first_line.startswith(prefix):
+        return first_line.removeprefix(prefix).strip()
+
+    return first_line.strip()
+
+
+def build_export_filename(search_run: SearchRun, extension: str) -> str:
+    topic = slugify(search_run.pedido.tema_formacao)
+    return f"bot-formadores-{topic}.{extension}"
+
+
+def slugify(value: str) -> str:
+    slug = "".join(
+        character.lower() if character.isalnum() else "-"
+        for character in value.strip()
+    )
+    parts = [part for part in slug.split("-") if part]
+    return "-".join(parts) or "export"
 
 
 def render_sidebar(settings: Settings) -> bool:
@@ -165,6 +253,34 @@ def render_search_summary(search_run: SearchRun, run_id: str) -> None:
         if search_run.resultados
         else 0,
     )
+
+
+def render_export_actions(search_run: SearchRun) -> None:
+    if not search_run.resultados:
+        return
+
+    rows = build_export_rows(search_run)
+    csv_data = export_rows_to_csv(rows)
+    json_data = export_rows_to_json(rows)
+
+    st.subheader("Exportação")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.download_button(
+            "Descarregar CSV",
+            data=csv_data,
+            file_name=build_export_filename(search_run, "csv"),
+            mime="text/csv",
+        )
+
+    with col2:
+        st.download_button(
+            "Descarregar JSON",
+            data=json_data,
+            file_name=build_export_filename(search_run, "json"),
+            mime="application/json",
+        )
 
 
 def render_candidate_result(
@@ -321,6 +437,8 @@ def main() -> None:
             "Experimenta alargar o tema, remover a localização ou voltar a usar o provider mock."
         )
         return
+
+    render_export_actions(search_run)
 
     for index, result in enumerate(search_run.resultados):
         render_candidate_result(result, index, show_debug)
