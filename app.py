@@ -6,7 +6,7 @@ from bot.db import list_search_runs, save_search_run
 from bot.messages import generate_outreach_messages
 from bot.models import CandidateResult, SearchRun, TrainingFormat, TrainingRequest
 from bot.scoring import score_candidates
-from bot.search import MockSearchProvider, generate_search_queries
+from bot.search import generate_search_queries, get_search_provider
 
 
 FORMAT_LABELS = {
@@ -24,8 +24,9 @@ CHANNEL_LABELS = {
 }
 
 
-def build_search_run(request: TrainingRequest) -> SearchRun:
-    provider = MockSearchProvider()
+def build_search_run(request: TrainingRequest, settings=None) -> SearchRun:
+    settings = settings or get_settings()
+    provider = get_search_provider(settings)
     candidates = provider.search(request)
     scored_candidates = score_candidates(request, candidates)
 
@@ -134,7 +135,7 @@ def main() -> None:
         st.exception(error)
         return
 
-    search_run = build_search_run(request)
+    search_run = build_search_run(request, settings=settings)
     run_id = save_search_run(settings.database_path, search_run)
 
     st.success(f"Pesquisa guardada com ID: {run_id}")
@@ -143,6 +144,13 @@ def main() -> None:
     st.code("\n".join(search_run.queries))
 
     st.subheader("Candidatos recomendados")
+    if not search_run.resultados:
+        st.warning(
+            "Não foram encontrados candidatos públicos para este pedido. "
+            "Experimenta alargar o tema, remover a localização ou voltar a usar o provider mock."
+        )
+        return
+
     for index, result in enumerate(search_run.resultados):
         render_candidate_result(result, index)
 

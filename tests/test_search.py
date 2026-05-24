@@ -1,5 +1,14 @@
+from bot.config import Settings
 from bot.models import TrainingFormat, TrainingRequest
-from bot.search import MockSearchProvider, generate_search_queries
+from bot.search import (
+    MockSearchProvider,
+    PublicWebSearchProvider,
+    generate_search_queries,
+    get_search_provider,
+    is_job_board_result,
+    is_relevant_public_result,
+)
+from bot.parsing import PublicSearchResult
 
 
 def make_request() -> TrainingRequest:
@@ -23,6 +32,7 @@ def test_generate_search_queries_uses_request_fields() -> None:
     assert "Python" in queries[0]
     assert "Tecnologia" in queries[0]
     assert "Porto" in queries[0]
+    assert "freelancer" in queries[0]
 
 
 def test_generate_search_queries_without_location() -> None:
@@ -48,6 +58,8 @@ def test_mock_search_provider_returns_candidates() -> None:
     assert len(candidates) == 3
     assert candidates[0].nome == "Ana Silva"
     assert candidates[0].fonte == "mock"
+    assert candidates[0].matched_query
+    assert candidates[0].source_domain == "linkedin.com"
 
 
 def test_mock_search_provider_returns_candidates_with_links() -> None:
@@ -67,3 +79,126 @@ def test_mock_search_provider_uses_request_topic_in_candidate_role() -> None:
     candidates = provider.search(request)
 
     assert candidates[0].cargo == "Especialista em Python"
+
+
+def test_get_search_provider_returns_mock_provider() -> None:
+    settings = Settings(
+        app_env="test",
+        database_path="test.sqlite3",
+        search_provider="mock",
+        public_search_url="https://example.com/search",
+        public_search_timeout_seconds=1,
+        public_search_max_results=5,
+    )
+
+    provider = get_search_provider(settings)
+
+    assert isinstance(provider, MockSearchProvider)
+
+
+def test_get_search_provider_returns_public_web_provider() -> None:
+    settings = Settings(
+        app_env="test",
+        database_path="test.sqlite3",
+        search_provider="public_web",
+        public_search_url="https://example.com/search",
+        public_search_timeout_seconds=1,
+        public_search_max_results=5,
+    )
+
+    provider = get_search_provider(settings)
+
+    assert isinstance(provider, PublicWebSearchProvider)
+
+
+def test_public_web_search_provider_returns_candidates(monkeypatch) -> None:
+    html = """
+    <div class="result">
+      <a class="result__a" href="https://www.linkedin.com/in/ana-silva">
+        Ana Silva - Freelance Python Trainer | LinkedIn
+      </a>
+      <a class="result__snippet">
+        Freelance trainer and speaker for Python workshops.
+      </a>
+    </div>
+    """
+
+    class FakeResponse:
+        text = html
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_get(*args, **kwargs):
+        return FakeResponse()
+
+    monkeypatch.setattr("bot.search.requests.get", fake_get)
+
+    provider = PublicWebSearchProvider(
+        search_url="https://example.com/search",
+        timeout_seconds=1,
+        max_results=1,
+    )
+
+    candidates = provider.search(make_request())
+
+    assert len(candidates) == 1
+    assert candidates[0].nome == "Ana Silva"
+    assert candidates[0].fonte == "public_web"
+    assert candidates[0].source_domain == "linkedin.com"
+    assert candidates[0].matched_query
+
+
+def test_public_web_search_provider_filters_irrelevant_results(monkeypatch) -> None:
+    html = """
+    <li class="b_algo">
+      <h2>
+        <a href="https://www.python.org/">Welcome to Python.org</a>
+      </h2>
+      <div class="b_caption">
+        <p>The official home of the Python programming language.</p>
+      </div>
+    </li>
+    """
+
+    class FakeResponse:
+        text = html
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_get(*args, **kwargs):
+        return FakeResponse()
+
+    monkeypatch.setattr("bot.search.requests.get", fake_get)
+
+    provider = PublicWebSearchProvider(max_results=1)
+
+    candidates = provider.search(make_request())
+
+    assert candidates == []
+
+
+def test_linkedin_profile_result_is_relevant() -> None:
+    result = PublicSearchResult(
+        title="Ana Silva - Freelance Python Trainer",
+        url="https://www.linkedin.com/in/ana-silva",
+        snippet="Freelance trainer.",
+        matched_query="Python freelancer",
+        source_domain="linkedin.com",
+    )
+
+    assert is_relevant_public_result(result)
+
+
+def test_job_board_result_is_not_relevant() -> None:
+    result = PublicSearchResult(
+        title="Emprego Formador - Maio 2026",
+        url="https://www.net-empregos.com/formador-python",
+        snippet="Ofertas de emprego para formador.",
+        matched_query="formador python freelance",
+        source_domain="net-empregos.com",
+    )
+
+    assert is_job_board_result(result)
+    assert not is_relevant_public_result(result)

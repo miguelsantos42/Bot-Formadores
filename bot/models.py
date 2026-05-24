@@ -16,6 +16,15 @@ class ContactChannel(str, Enum):
     formulario = "formulario"
 
 
+class ProfileType(str, Enum):
+    linkedin_profile = "linkedin_profile"
+    personal_site = "personal_site"
+    company_page = "company_page"
+    job_board = "job_board"
+    article_or_post = "article_or_post"
+    unknown = "unknown"
+
+
 class TrainingRequest(BaseModel):
     tema_formacao: str = Field(min_length=3)
     area_interna: str = Field(min_length=2)
@@ -43,6 +52,13 @@ class Candidate(BaseModel):
 
     fonte: str
     excerto: str | None = None
+    matched_query: str | None = None
+    source_domain: str | None = None
+    search_rank: int | None = Field(default=None, ge=1)
+    snippet_raw: str | None = None
+    result_title_raw: str | None = None
+    profile_type: ProfileType = ProfileType.unknown
+    is_probably_linkedin_profile: bool = False
 
 
 class CandidateScore(BaseModel):

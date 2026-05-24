@@ -5,6 +5,7 @@ from bot.models import (
     Candidate,
     CandidateScore,
     ContactChannel,
+    ProfileType,
     PublicLink,
     ScoredCandidate,
     TrainingFormat,
@@ -52,12 +53,48 @@ def test_candidate_accepts_public_links() -> None:
         ],
         email_publico="ana@example.com",
         fonte="mock",
+        matched_query="Python Tecnologia freelancer",
+        source_domain="linkedin.com",
+        search_rank=1,
+        snippet_raw="Ana Silva is a freelance trainer.",
+        result_title_raw="Ana Silva - Freelance Python Trainer | LinkedIn",
+        profile_type=ProfileType.linkedin_profile,
+        is_probably_linkedin_profile=True,
     )
 
     assert candidate.nome == "Ana Silva"
     assert candidate.cargo == "Data Scientist"
     assert len(candidate.links) == 1
     assert candidate.links[0].label == "LinkedIn"
+    assert candidate.matched_query == "Python Tecnologia freelancer"
+    assert candidate.source_domain == "linkedin.com"
+    assert candidate.search_rank == 1
+    assert candidate.snippet_raw == "Ana Silva is a freelance trainer."
+    assert candidate.result_title_raw == "Ana Silva - Freelance Python Trainer | LinkedIn"
+    assert candidate.profile_type == ProfileType.linkedin_profile
+    assert candidate.is_probably_linkedin_profile is True
+
+
+def test_candidate_defaults_public_profile_metadata() -> None:
+    candidate = Candidate(
+        nome="Ana Silva",
+        fonte="manual",
+    )
+
+    assert candidate.search_rank is None
+    assert candidate.snippet_raw is None
+    assert candidate.result_title_raw is None
+    assert candidate.profile_type == ProfileType.unknown
+    assert candidate.is_probably_linkedin_profile is False
+
+
+def test_candidate_rejects_invalid_search_rank() -> None:
+    with pytest.raises(ValidationError):
+        Candidate(
+            nome="Ana Silva",
+            fonte="public_web",
+            search_rank=0,
+        )
 
 
 def test_score_rejects_values_above_100() -> None:

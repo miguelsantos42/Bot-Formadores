@@ -13,10 +13,21 @@ load_dotenv()
 class Settings:
     app_env: str
     database_path: Path
+    search_provider: str
+    public_search_url: str
+    public_search_timeout_seconds: int
+    public_search_max_results: int
 
 
 def get_settings() -> Settings:
     return Settings(
         app_env=os.getenv("APP_ENV", "local"),
         database_path=Path(os.getenv("DATABASE_PATH", "formadores_bot.sqlite3")),
+        search_provider=os.getenv("SEARCH_PROVIDER", "public_web"),
+        public_search_url=os.getenv(
+            "PUBLIC_SEARCH_URL",
+            "https://www.bing.com/search",
+        ),
+        public_search_timeout_seconds=int(os.getenv("PUBLIC_SEARCH_TIMEOUT_SECONDS", "10")),
+        public_search_max_results=int(os.getenv("PUBLIC_SEARCH_MAX_RESULTS", "10")),
     )
