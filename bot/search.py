@@ -11,6 +11,102 @@ from bot.parsing import (
     parse_search_results_html,
 )
 
+MAX_SEARCH_QUERIES = 20
+LINKEDIN_PEOPLE_QUERY_LIMIT = 10
+LINKEDIN_COMPANY_QUERY_LIMIT = 4
+PUBLIC_GENERAL_QUERY_LIMIT = 4
+EXPERIMENTAL_QUERY_LIMIT = 2
+
+PEOPLE_LINKEDIN_TERMS = [
+    "formador",
+    "formadora",
+    "trainer",
+    "speaker",
+    "mentor",
+    "coach",
+    "consultant",
+    "facilitator",
+]
+
+COMPANY_LINKEDIN_TERMS = [
+    "formação",
+    "training",
+    "consultoria",
+    "consulting",
+    "workshops",
+]
+
+PUBLIC_PROFILE_TERMS = [
+    "workshop",
+    "trainer",
+    "speaker",
+    "consultant",
+    "coach",
+    "portfolio",
+]
+
+EXPERIMENTAL_TERMS = [
+    "freelancer",
+    "independent consultant",
+    "facilitator",
+]
+
+LINKEDIN_PEOPLE_EXCLUSIONS = [
+    "-jobs",
+    "-job",
+    "-careers",
+    "-company",
+    "-pulse",
+    "-posts",
+]
+
+LINKEDIN_COMPANY_EXCLUSIONS = [
+    "-jobs",
+    "-job",
+    "-careers",
+    "-vagas",
+    "-emprego",
+]
+
+PUBLIC_GENERAL_EXCLUSIONS = [
+    "-wikipedia",
+    "-youtube",
+]
+
+EXPERIMENTAL_EXCLUSIONS = [
+    "-wikipedia",
+]
+
+DOMAIN_TOPIC_EXPANSIONS = {
+    "rh": [
+        "recursos humanos",
+        "human resources",
+        "people management",
+        "career development",
+        "gestão de carreira",
+    ],
+    "marketing": [
+        "marketing estratégico",
+        "strategic marketing",
+        "marketing strategy",
+    ],
+    "qualidade": [
+        "gestão da qualidade",
+        "quality management",
+        "continuous improvement",
+    ],
+    "lideranca": [
+        "liderança",
+        "leadership",
+        "team leadership",
+    ],
+    "produtividade": [
+        "produtividade",
+        "productivity",
+        "time management",
+    ],
+}
+
 
 class SearchProvider(ABC):
     @abstractmethod
@@ -19,23 +115,187 @@ class SearchProvider(ABC):
 
 
 def generate_search_queries(request: TrainingRequest) -> list[str]:
+    topic = request.tema_formacao.strip()
+    area = request.area_interna.strip()
+    location_part = build_location_part(request.localizacao)
+    topic_terms = build_topic_terms(topic, area)
+
+    queries: list[str] = []
+    queries.extend(
+        build_linkedin_people_queries(topic_terms, location_part)[
+            :LINKEDIN_PEOPLE_QUERY_LIMIT
+        ]
+    )
+    queries.extend(
+        build_linkedin_company_queries(topic_terms, location_part)[
+            :LINKEDIN_COMPANY_QUERY_LIMIT
+        ]
+    )
+    queries.extend(
+        build_public_general_queries(topic_terms, location_part)[
+            :PUBLIC_GENERAL_QUERY_LIMIT
+        ]
+    )
+    queries.extend(
+        build_experimental_queries(topic_terms, location_part)[:EXPERIMENTAL_QUERY_LIMIT]
+    )
+
+    return dedupe_preserve_order(queries, limit=MAX_SEARCH_QUERIES)
+
+
+def build_topic_terms(topic: str, area: str) -> list[str]:
     base_terms = [
-        request.tema_formacao,
-        request.area_interna,
+        topic,
+        area,
+        f"{topic} {area}",
+    ]
+    text = normalize_query_text(f"{topic} {area}")
+    expanded_terms = list(base_terms)
+
+    if has_any(text, ["rh", "recursos humanos", "human resources"]):
+        expanded_terms.extend(DOMAIN_TOPIC_EXPANSIONS["rh"])
+
+    if has_any(text, ["marketing"]):
+        expanded_terms.extend(DOMAIN_TOPIC_EXPANSIONS["marketing"])
+
+    if has_any(text, ["qualidade", "quality"]):
+        expanded_terms.extend(DOMAIN_TOPIC_EXPANSIONS["qualidade"])
+
+    if has_any(text, ["liderança", "lideranca", "leadership"]):
+        expanded_terms.extend(DOMAIN_TOPIC_EXPANSIONS["lideranca"])
+
+    if has_any(text, ["produtividade", "productivity"]):
+        expanded_terms.extend(DOMAIN_TOPIC_EXPANSIONS["produtividade"])
+
+    return dedupe_preserve_order(expanded_terms, limit=8)
+
+
+def build_linkedin_people_queries(
+    topic_terms: list[str],
+    location_part: str,
+) -> list[str]:
+    queries: list[str] = []
+
+    for term in topic_terms[:4]:
+        quoted_term = quote_term(term)
+
+        for people_term in PEOPLE_LINKEDIN_TERMS[:4]:
+            queries.append(
+                build_query(
+                    f"site:linkedin.com/in {quoted_term} {people_term}{location_part}",
+                    LINKEDIN_PEOPLE_EXCLUSIONS,
+                )
+            )
+
+    return queries
+
+
+def build_linkedin_company_queries(
+    topic_terms: list[str],
+    location_part: str,
+) -> list[str]:
+    queries: list[str] = []
+
+    for term in topic_terms[:3]:
+        quoted_term = quote_term(term)
+
+        for company_term in COMPANY_LINKEDIN_TERMS[:2]:
+            queries.append(
+                build_query(
+                    f"site:linkedin.com/company {quoted_term} {company_term}{location_part}",
+                    LINKEDIN_COMPANY_EXCLUSIONS,
+                )
+            )
+
+    return queries
+
+
+def build_public_general_queries(
+    topic_terms: list[str],
+    location_part: str,
+) -> list[str]:
+    queries: list[str] = []
+    public_patterns = [
+        " ".join(PUBLIC_PROFILE_TERMS[:3]),
+        " ".join(PUBLIC_PROFILE_TERMS[3:6]),
     ]
 
-    if request.localizacao:
-        base_terms.append(request.localizacao)
+    for public_terms in public_patterns:
+        for term in topic_terms[:4]:
+            quoted_term = quote_term(term)
+            queries.append(
+                build_query(
+                    f"{quoted_term} {public_terms}{location_part}",
+                    PUBLIC_GENERAL_EXCLUSIONS,
+                )
+            )
 
-    main_query = " ".join(base_terms)
+    return queries
 
-    return [
-        f"site:linkedin.com/in {main_query} freelancer formador",
-        f"site:linkedin.com/in {main_query} freelance trainer",
-        f"{main_query} freelancer workshop portfolio",
-        f"{main_query} formador freelancer site pessoal",
-        f'{request.tema_formacao} "{request.area_interna}" LinkedIn freelancer',
-    ]
+
+def build_experimental_queries(
+    topic_terms: list[str],
+    location_part: str,
+) -> list[str]:
+    queries: list[str] = []
+
+    for term in topic_terms[:3]:
+        quoted_term = quote_term(term)
+
+        for experimental_term in EXPERIMENTAL_TERMS[:2]:
+            queries.append(
+                build_query(
+                    f"{quoted_term} {experimental_term}{location_part}",
+                    EXPERIMENTAL_EXCLUSIONS,
+                )
+            )
+
+    return queries
+
+
+def build_query(base_query: str, exclusions: list[str]) -> str:
+    return " ".join([base_query, *exclusions]).strip()
+
+
+def build_location_part(location: str | None) -> str:
+    if not location:
+        return ""
+
+    return f" {location.strip()}"
+
+
+def quote_term(value: str) -> str:
+    clean_value = value.strip()
+
+    if " " in clean_value:
+        return f'"{clean_value}"'
+
+    return clean_value
+
+
+def has_any(text: str, values: list[str]) -> bool:
+    return any(value in text for value in values)
+
+
+def normalize_query_text(value: str) -> str:
+    return value.strip().lower()
+
+
+def dedupe_preserve_order(values: list[str], limit: int) -> list[str]:
+    deduped: list[str] = []
+
+    for value in values:
+        clean_value = value.strip()
+        if not clean_value:
+            continue
+
+        if clean_value not in deduped:
+            deduped.append(clean_value)
+
+        if len(deduped) >= limit:
+            break
+
+    return deduped
 
 
 def get_search_provider(settings: Settings) -> SearchProvider:

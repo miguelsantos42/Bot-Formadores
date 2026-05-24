@@ -3,6 +3,8 @@ from bot.models import TrainingFormat, TrainingRequest
 from bot.search import (
     MockSearchProvider,
     PublicWebSearchProvider,
+    build_topic_terms,
+    dedupe_preserve_order,
     generate_search_queries,
     get_search_provider,
     is_job_board_result,
@@ -28,11 +30,11 @@ def test_generate_search_queries_uses_request_fields() -> None:
 
     queries = generate_search_queries(request)
 
-    assert len(queries) == 5
+    assert len(queries) == 20
     assert "Python" in queries[0]
-    assert "Tecnologia" in queries[0]
     assert "Porto" in queries[0]
-    assert "freelancer" in queries[0]
+    assert queries[0].startswith("site:linkedin.com/in")
+    assert "formador" in queries[0]
 
 
 def test_generate_search_queries_without_location() -> None:
@@ -44,9 +46,94 @@ def test_generate_search_queries_without_location() -> None:
 
     queries = generate_search_queries(request)
 
-    assert len(queries) == 5
+    assert len(queries) == 20
     assert "Data Science" in queries[0]
-    assert "Analytics" in queries[0]
+    assert all("  " not in query for query in queries)
+
+
+def test_generate_search_queries_are_ordered_by_priority() -> None:
+    request = make_request()
+
+    queries = generate_search_queries(request)
+
+    people_queries = queries[:10]
+    company_queries = queries[10:14]
+    public_queries = queries[14:18]
+    experimental_queries = queries[18:20]
+
+    assert all(query.startswith("site:linkedin.com/in") for query in people_queries)
+    assert all(query.startswith("site:linkedin.com/company") for query in company_queries)
+    assert all(not query.startswith("site:linkedin.com") for query in public_queries)
+    assert all(not query.startswith("site:linkedin.com") for query in experimental_queries)
+
+
+def test_generate_search_queries_use_stronger_linkedin_exclusions() -> None:
+    request = make_request()
+
+    queries = generate_search_queries(request)
+
+    assert "-jobs" in queries[0]
+    assert "-company" in queries[0]
+    assert "-pulse" in queries[0]
+    assert "-youtube" not in queries[0]
+
+
+def test_generate_search_queries_use_lighter_public_exclusions() -> None:
+    request = make_request()
+
+    queries = generate_search_queries(request)
+    public_query = queries[14]
+
+    assert "-wikipedia" in public_query
+    assert "-youtube" in public_query
+    assert "-jobs" not in public_query
+    assert "-company" not in public_query
+
+
+def test_generate_search_queries_expand_hr_terms_with_controlled_limit() -> None:
+    request = TrainingRequest(
+        tema_formacao="plano de carreira",
+        area_interna="RH",
+        descricao_contexto="Sessao interna para membros da JuniFEUP.",
+        localizacao="Portugal",
+    )
+
+    topic_terms = build_topic_terms(request.tema_formacao, request.area_interna)
+    queries = generate_search_queries(request)
+
+    assert len(topic_terms) <= 8
+    assert "recursos humanos" in topic_terms
+    assert "human resources" in topic_terms
+    assert "career development" in topic_terms
+    assert "gestão de carreira" in topic_terms
+    assert any('"recursos humanos"' in query for query in queries)
+    assert len(queries) == 20
+    assert len(queries) == len(set(queries))
+
+
+def test_generate_search_queries_expand_marketing_terms() -> None:
+    request = TrainingRequest(
+        tema_formacao="marketing estratégico",
+        area_interna="Marketing",
+        descricao_contexto="Sessao interna para membros da JuniFEUP.",
+        localizacao="Portugal",
+    )
+
+    topic_terms = build_topic_terms(request.tema_formacao, request.area_interna)
+    queries = generate_search_queries(request)
+
+    assert "strategic marketing" in topic_terms
+    assert "marketing strategy" in topic_terms
+    assert any('"strategic marketing"' in query for query in queries)
+    assert len(queries) == 20
+
+
+def test_dedupe_preserve_order_keeps_first_values() -> None:
+    values = ["alpha", "beta", "alpha", "gamma"]
+
+    deduped = dedupe_preserve_order(values, limit=3)
+
+    assert deduped == ["alpha", "beta", "gamma"]
 
 
 def test_mock_search_provider_returns_candidates() -> None:
