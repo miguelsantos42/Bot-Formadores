@@ -231,6 +231,46 @@ def test_job_board_profile_type_is_penalized() -> None:
     assert job_board_score < linkedin_score
 
 
+def test_article_or_post_profile_type_is_penalized_against_linkedin_profile() -> None:
+    request = make_request()
+    profile_candidate = Candidate(
+        nome="Ana Silva",
+        cargo="Python Trainer",
+        localizacao="Porto",
+        links=[
+            PublicLink(
+                label="LinkedIn",
+                url="https://www.linkedin.com/in/ana-silva",
+            )
+        ],
+        fonte="public_web",
+        result_title_raw="Ana Silva - Python Trainer | LinkedIn",
+        snippet_raw="Trainer and workshop facilitator.",
+        profile_type=ProfileType.linkedin_profile,
+        is_probably_linkedin_profile=True,
+    )
+    article_candidate = Candidate(
+        nome="Artigo sobre Python",
+        cargo="Python Trainer",
+        localizacao="Porto",
+        links=[
+            PublicLink(
+                label="Artigo",
+                url="https://example.com/blog/python-training",
+            )
+        ],
+        fonte="public_web",
+        result_title_raw="Artigo sobre Python Trainer",
+        snippet_raw="Trainer and workshop facilitator.",
+        profile_type=ProfileType.article_or_post,
+    )
+
+    profile_score = score_candidate(request, profile_candidate).score.score_total
+    article_score = score_candidate(request, article_candidate).score.score_total
+
+    assert article_score < profile_score
+
+
 def test_headline_raw_with_training_signals_increases_thematic_fit() -> None:
     request = make_request()
     candidate_without_headline = Candidate(
@@ -363,3 +403,41 @@ def test_score_total_stays_in_scale_and_orders_candidates_sensibly() -> None:
 
     assert scored[0].candidato.nome == "Ana Silva"
     assert all(0 <= item.score.score_total <= 100 for item in scored)
+
+
+def test_strong_public_linkedin_profile_without_email_remains_competitive() -> None:
+    request = make_request()
+    strong_profile_without_email = Candidate(
+        nome="Ana Silva",
+        cargo="Freelance Python Trainer",
+        localizacao="Porto",
+        links=[
+            PublicLink(
+                label="LinkedIn",
+                url="https://www.linkedin.com/in/ana-silva",
+            )
+        ],
+        email_publico=None,
+        fonte="public_web",
+        result_title_raw="Ana Silva - Python Trainer and Speaker | LinkedIn",
+        snippet_raw="Freelance mentor and workshop facilitator based in Porto.",
+        profile_type=ProfileType.linkedin_profile,
+        is_probably_linkedin_profile=True,
+        search_rank=1,
+    )
+    weak_candidate_with_email = Candidate(
+        nome="Carlos Lima",
+        cargo="Gestor de projeto",
+        localizacao="Lisboa",
+        links=[],
+        email_publico="carlos@example.com",
+        fonte="public_web",
+        result_title_raw="Carlos Lima",
+        snippet_raw="Perfil público generalista.",
+        profile_type=ProfileType.unknown,
+    )
+
+    scored = score_candidates(request, [weak_candidate_with_email, strong_profile_without_email])
+
+    assert scored[0].candidato.nome == "Ana Silva"
+    assert scored[0].canal_recomendado == ContactChannel.linkedin

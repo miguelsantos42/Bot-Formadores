@@ -88,6 +88,24 @@ def test_candidate_defaults_public_profile_metadata() -> None:
     assert candidate.is_probably_linkedin_profile is False
 
 
+def test_candidate_accepts_none_for_optional_public_metadata() -> None:
+    candidate = Candidate(
+        nome="Ana Silva",
+        fonte="public_web",
+        matched_query=None,
+        source_domain=None,
+        search_rank=None,
+        snippet_raw=None,
+        result_title_raw=None,
+    )
+
+    assert candidate.matched_query is None
+    assert candidate.source_domain is None
+    assert candidate.search_rank is None
+    assert candidate.snippet_raw is None
+    assert candidate.result_title_raw is None
+
+
 def test_candidate_rejects_invalid_search_rank() -> None:
     with pytest.raises(ValidationError):
         Candidate(
@@ -95,6 +113,23 @@ def test_candidate_rejects_invalid_search_rank() -> None:
             fonte="public_web",
             search_rank=0,
         )
+
+
+def test_candidate_rejects_invalid_profile_type() -> None:
+    with pytest.raises(ValidationError):
+        Candidate(
+            nome="Ana Silva",
+            fonte="public_web",
+            profile_type="linkedin_person",
+        )
+
+
+def test_profile_type_enum_values_are_stable() -> None:
+    assert ProfileType.linkedin_profile.value == "linkedin_profile"
+    assert ProfileType.company_page.value == "company_page"
+    assert ProfileType.job_board.value == "job_board"
+    assert ProfileType.article_or_post.value == "article_or_post"
+    assert ProfileType.unknown.value == "unknown"
 
 
 def test_score_rejects_values_above_100() -> None:

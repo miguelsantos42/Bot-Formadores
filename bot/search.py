@@ -4,7 +4,7 @@ from collections.abc import Iterable
 import requests
 
 from bot.config import Settings
-from bot.models import Candidate, PublicLink, TrainingRequest
+from bot.models import Candidate, ProfileType, PublicLink, TrainingRequest
 from bot.parsing import (
     PublicSearchResult,
     parse_public_result_to_candidate,
@@ -400,7 +400,10 @@ class PublicWebSearchProvider(SearchProvider):
         seen_urls: set[str] = set()
 
         for query in generate_search_queries(request):
-            for result in self._safe_fetch_results(query):
+            for search_rank, result in enumerate(
+                self._safe_fetch_results(query),
+                start=1,
+            ):
                 if not is_relevant_public_result(result):
                     continue
 
@@ -408,7 +411,13 @@ class PublicWebSearchProvider(SearchProvider):
                     continue
 
                 seen_urls.add(result.url)
-                candidates.append(parse_public_result_to_candidate(result))
+                candidates.append(
+                    enrich_public_candidate_metadata(
+                        candidate=parse_public_result_to_candidate(result),
+                        result=result,
+                        search_rank=search_rank,
+                    )
+                )
 
                 if len(candidates) >= self.max_results:
                     return candidates
@@ -460,6 +469,55 @@ def is_relevant_public_result(result: PublicSearchResult) -> bool:
     ]
 
     return any(keyword in text for keyword in keywords)
+
+
+def enrich_public_candidate_metadata(
+    candidate: Candidate,
+    result: PublicSearchResult,
+    search_rank: int,
+) -> Candidate:
+    return candidate.model_copy(
+        update={
+            "search_rank": search_rank,
+            "snippet_raw": result.snippet or None,
+            "result_title_raw": result.title,
+            "profile_type": detect_profile_type(result),
+            "is_probably_linkedin_profile": is_probably_linkedin_profile(result),
+        }
+    )
+
+
+def detect_profile_type(result: PublicSearchResult) -> ProfileType:
+    url = result.url.lower()
+    domain = result.source_domain.lower()
+    text = " ".join([result.title, result.snippet]).lower()
+
+    if "linkedin.com" in domain and "/in/" in url:
+        return ProfileType.linkedin_profile
+
+    if "linkedin.com" in domain and "/company/" in url:
+        return ProfileType.company_page
+
+    if is_job_board_result(result):
+        return ProfileType.job_board
+
+    if any(term in url for term in ["/blog", "/post", "/article", "/news"]):
+        return ProfileType.article_or_post
+
+    if any(term in text for term in ["blog", "artigo", "article", "post"]):
+        return ProfileType.article_or_post
+
+    if any(term in text for term in ["portfolio", "freelance", "consultor", "trainer"]):
+        return ProfileType.personal_site
+
+    return ProfileType.unknown
+
+
+def is_probably_linkedin_profile(result: PublicSearchResult) -> bool:
+    return (
+        "linkedin.com" in result.source_domain.lower()
+        and "/in/" in result.url.lower()
+    )
 
 
 def is_job_board_result(result: PublicSearchResult) -> bool:

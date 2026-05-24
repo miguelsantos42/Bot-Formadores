@@ -124,6 +124,27 @@ def test_list_search_run_candidates_returns_debug_payload(tmp_path: Path) -> Non
     assert "contactabilidade" in first_candidate["score"]
     assert first_candidate["candidate"]["nome"] == first_candidate["candidate_name"]
     assert first_candidate["raw_result"]["matched_query"] == first_candidate["matched_query"]
+    assert first_candidate["created_at"]
+
+
+def test_search_candidate_debug_keeps_all_score_components(tmp_path: Path) -> None:
+    database_path = tmp_path / "test.sqlite3"
+    search_run = make_search_run()
+
+    run_id = save_search_run(database_path, search_run)
+
+    first_candidate = list_search_run_candidates(database_path, run_id)[0]
+
+    assert set(first_candidate["score"]) >= {
+        "fit_tematico",
+        "fit_funcional",
+        "experiencia_formacao",
+        "localizacao_score",
+        "contactabilidade",
+        "credibilidade_publica",
+        "score_total",
+        "motivo",
+    }
 
 
 def test_candidate_debug_payload_links_to_matching_query(tmp_path: Path) -> None:
@@ -137,6 +158,22 @@ def test_candidate_debug_payload_links_to_matching_query(tmp_path: Path) -> None
     query_ids = {query["id"] for query in queries}
 
     assert candidates[0]["query_id"] in query_ids
+
+
+def test_candidate_debug_payload_query_text_matches_stored_query(tmp_path: Path) -> None:
+    database_path = tmp_path / "test.sqlite3"
+    search_run = make_search_run()
+
+    run_id = save_search_run(database_path, search_run)
+
+    queries = list_search_run_queries(database_path, run_id)
+    candidates = list_search_run_candidates(database_path, run_id)
+    queries_by_id = {query["id"]: query for query in queries}
+
+    for candidate in candidates:
+        assert candidate["query_id"] is not None
+        stored_query = queries_by_id[candidate["query_id"]]
+        assert stored_query["query_text"] == candidate["matched_query"]
 
 
 def test_get_search_run_returns_saved_run(tmp_path: Path) -> None:
