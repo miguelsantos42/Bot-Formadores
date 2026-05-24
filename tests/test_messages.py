@@ -33,7 +33,7 @@ def make_scored_candidate() -> ScoredCandidate:
         contactabilidade=100,
         credibilidade_publica=80,
         score_total=88,
-        motivo="forte alinhamento com o tema; contacto direto disponivel.",
+        motivo="forte alinhamento com o tema; contacto direto disponível.",
     )
 
     return ScoredCandidate(
@@ -59,7 +59,7 @@ def test_email_mentions_candidate_name_and_training_topic() -> None:
         scored_candidate=make_scored_candidate(),
     )
 
-    assert "Ola Ana" in messages.email_inicial
+    assert "Olá Ana" in messages.email_inicial
     assert "Python" in messages.email_inicial
     assert "JuniFEUP" in messages.email_inicial
 

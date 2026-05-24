@@ -20,15 +20,15 @@ def build_initial_email(
     candidate_context = build_candidate_context(scored_candidate)
 
     return (
-        f"Assunto: Convite para sessao sobre {request.tema_formacao}\n\n"
-        f"Ola {first_name},\n\n"
-        "O meu nome e Miguel e faco parte da JuniFEUP. "
-        f"Estamos a preparar uma sessao interna sobre {request.tema_formacao} "
-        f"para a area de {request.area_interna}.\n\n"
-        f"Encontramos o teu perfil e pareceu-nos relevante porque {candidate_context}.\n\n"
-        f"Contexto da sessao: {request.descricao_contexto}\n\n"
-        "Gostariamos de perceber se terias disponibilidade para uma primeira conversa "
-        "exploratoria sobre uma possivel colaboracao.\n\n"
+        f"Assunto: Convite para sessão sobre {request.tema_formacao}\n\n"
+        f"Olá {first_name},\n\n"
+        "O meu nome é Miguel e faço parte da JuniFEUP. "
+        f"Estamos a preparar uma sessão interna sobre {request.tema_formacao} "
+        f"para a área de {request.area_interna}.\n\n"
+        f"Encontrámos o teu perfil e pareceu-nos relevante porque {candidate_context}.\n\n"
+        f"Contexto da sessão: {request.descricao_contexto}\n\n"
+        "Gostaríamos de perceber se terias disponibilidade para uma primeira conversa "
+        "exploratória sobre uma possível colaboração.\n\n"
         "Obrigado,\n"
         "Miguel"
     )
@@ -42,10 +42,10 @@ def build_linkedin_message(
     first_name = get_first_name(candidate.nome)
 
     message = (
-        f"Ola {first_name}, encontrei o teu perfil no contexto de uma sessao interna "
+        f"Olá {first_name}, encontrei o teu perfil no contexto de uma sessão interna "
         f"da JuniFEUP sobre {request.tema_formacao}. "
-        "Pareceu-me que podia haver bom alinhamento com a tua experiencia. "
-        "Teria interesse em falar brevemente sobre uma possivel colaboracao?"
+        "Pareceu-me que podia haver bom alinhamento com a tua experiência. "
+        "Teria interesse em falar brevemente sobre uma possível colaboração?"
     )
 
     return truncate_text(message, max_length=500)
@@ -56,15 +56,15 @@ def build_candidate_context(scored_candidate: ScoredCandidate) -> str:
     pieces: list[str] = []
 
     if candidate.cargo:
-        pieces.append(f"o teu cargo atual e '{candidate.cargo}'")
+        pieces.append(f"o teu cargo atual é '{candidate.cargo}'")
 
     if candidate.empresa:
-        pieces.append(f"a tua experiencia esta ligada a {candidate.empresa}")
+        pieces.append(f"a tua experiência está ligada a {candidate.empresa}")
 
     if scored_candidate.score.motivo:
         pieces.append(scored_candidate.score.motivo)
 
-    return "; ".join(pieces) if pieces else "o teu perfil publico parece alinhado"
+    return "; ".join(pieces) if pieces else "o teu perfil público parece alinhado"
 
 
 def get_first_name(full_name: str) -> str:

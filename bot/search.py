@@ -53,7 +53,7 @@ class MockSearchProvider(SearchProvider):
                 fonte="mock",
                 excerto=(
                     f"Perfil encontrado para a query '{queries[0]}'. "
-                    "Experiencia em workshops e sessoes praticas."
+                    "Experiência em workshops e sessões práticas."
                 ),
             ),
             Candidate(
@@ -71,7 +71,7 @@ class MockSearchProvider(SearchProvider):
                 fonte="mock",
                 excerto=(
                     f"Perfil encontrado para a query '{queries[1]}'. "
-                    "Conteudos publicos indicam experiencia como speaker."
+                    "Conteúdos públicos indicam experiência como speaker."
                 ),
             ),
             Candidate(
@@ -89,7 +89,7 @@ class MockSearchProvider(SearchProvider):
                 fonte="mock",
                 excerto=(
                     f"Perfil encontrado para a query '{queries[2]}'. "
-                    "Ligacao forte a aprendizagem interna e desenvolvimento de equipas."
+                    "Ligação forte a aprendizagem interna e desenvolvimento de equipas."
                 ),
             ),
         ]

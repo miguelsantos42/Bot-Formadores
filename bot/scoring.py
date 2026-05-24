@@ -236,19 +236,19 @@ def build_score_reason(
     elif fit_tematico >= 70:
         reasons.append("alinhamento parcial com o tema")
     else:
-        reasons.append("alinhamento tematico limitado")
+        reasons.append("alinhamento temático limitado")
 
     if experiencia_formacao >= 80:
-        reasons.append("sinais publicos de experiencia em formacao")
+        reasons.append("sinais públicos de experiência em formação")
     elif experiencia_formacao >= 60:
-        reasons.append("alguma proximidade a atividades de formacao")
+        reasons.append("alguma proximidade a atividades de formação")
     else:
-        reasons.append("pouca evidencia publica de experiencia em formacao")
+        reasons.append("pouca evidência pública de experiência em formação")
 
     if contactabilidade >= 90:
-        reasons.append("contacto direto disponivel")
+        reasons.append("contacto direto disponível")
     elif contactabilidade >= 70:
-        reasons.append("contacto viavel via LinkedIn")
+        reasons.append("contacto viável via LinkedIn")
     else:
         reasons.append("contacto menos direto")
 
