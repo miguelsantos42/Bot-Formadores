@@ -93,6 +93,7 @@ def test_build_search_run_falls_back_to_mock_when_public_search_is_empty(
         public_search_url="https://example.com/search",
         public_search_timeout_seconds=1,
         public_search_max_results=5,
+        public_search_fallback_to_mock=True,
     )
     request = TrainingRequest(
         tema_formacao="Python",
@@ -150,6 +151,7 @@ def test_should_use_mock_fallback_requires_public_provider_and_empty_results() -
         public_search_url="https://example.com/search",
         public_search_timeout_seconds=1,
         public_search_max_results=5,
+        public_search_fallback_to_mock=True,
     )
     mock_settings = Settings(
         app_env="test",

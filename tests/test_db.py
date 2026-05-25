@@ -124,6 +124,11 @@ def test_list_search_run_candidates_returns_debug_payload(tmp_path: Path) -> Non
     assert "contactabilidade" in first_candidate["score"]
     assert first_candidate["candidate"]["nome"] == first_candidate["candidate_name"]
     assert first_candidate["raw_result"]["matched_query"] == first_candidate["matched_query"]
+    assert first_candidate["raw_result"]["matched_queries"]
+    assert first_candidate["raw_result"]["search_ranks"]
+    assert first_candidate["raw_result"]["evidence_query_count"] >= 1
+    assert first_candidate["raw_result"]["linkedin_profile_slug"]
+    assert first_candidate["raw_result"]["training_signals"]
     assert first_candidate["created_at"]
 
 
@@ -142,6 +147,12 @@ def test_search_candidate_debug_keeps_all_score_components(tmp_path: Path) -> No
         "localizacao_score",
         "contactabilidade",
         "credibilidade_publica",
+        "linkedin_profile_quality_score",
+        "semantic_topic_match_score",
+        "trainer_signal_score",
+        "multi_query_evidence_score",
+        "linkedin_slug_confidence_score",
+        "improved_location_score",
         "score_total",
         "motivo",
     }

@@ -27,8 +27,8 @@ class ProfileType(str, Enum):
 
 class TrainingRequest(BaseModel):
     tema_formacao: str = Field(min_length=2)
-    area_interna: str = Field(min_length=2)
-    descricao_contexto: str = Field(min_length=10)
+    area_interna: str = ""
+    descricao_contexto: str = ""
 
     localizacao: str | None = None
     formato: TrainingFormat = TrainingFormat.indiferente
@@ -54,7 +54,17 @@ class Candidate(BaseModel):
     excerto: str | None = None
     matched_query: str | None = None
     source_domain: str | None = None
+    linkedin_profile_url: str | None = None
+    linkedin_profile_slug: str | None = None
     search_rank: int | None = Field(default=None, ge=1)
+    search_ranks: list[int] = Field(default_factory=list)
+    matched_queries: list[str] = Field(default_factory=list)
+    evidence_titles: list[str] = Field(default_factory=list)
+    evidence_snippets: list[str] = Field(default_factory=list)
+    training_signals: list[str] = Field(default_factory=list)
+    topic_signals: list[str] = Field(default_factory=list)
+    functional_signals: list[str] = Field(default_factory=list)
+    evidence_query_count: int = Field(default=0, ge=0)
     snippet_raw: str | None = None
     result_title_raw: str | None = None
     profile_type: ProfileType = ProfileType.unknown
@@ -68,6 +78,12 @@ class CandidateScore(BaseModel):
     localizacao_score: int = Field(ge=0, le=100)
     contactabilidade: int = Field(ge=0, le=100)
     credibilidade_publica: int = Field(ge=0, le=100)
+    linkedin_profile_quality_score: int = Field(default=0, ge=0, le=100)
+    semantic_topic_match_score: int = Field(default=0, ge=0, le=100)
+    trainer_signal_score: int = Field(default=0, ge=0, le=100)
+    multi_query_evidence_score: int = Field(default=0, ge=0, le=100)
+    linkedin_slug_confidence_score: int = Field(default=0, ge=0, le=100)
+    improved_location_score: int = Field(default=0, ge=0, le=100)
 
     score_total: int = Field(ge=0, le=100)
     motivo: str
@@ -87,6 +103,11 @@ class OutreachMessages(BaseModel):
 class SearchDiagnostics(BaseModel):
     provider: str
     public_candidate_count: int = 0
+    query_count: int = 0
+    raw_result_count: int = 0
+    eligible_result_count: int = 0
+    blocked_query_count: int = 0
+    block_reason: str | None = None
     fallback_used: bool = False
     fallback_provider: str | None = None
     fallback_reason: str | None = None

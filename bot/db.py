@@ -286,10 +286,21 @@ def build_candidate_observability_row(
 def build_raw_result_payload(candidate: Candidate) -> dict:
     return {
         "matched_query": candidate.matched_query,
+        "matched_queries": candidate.matched_queries,
         "search_rank": candidate.search_rank,
+        "search_ranks": candidate.search_ranks,
+        "best_search_rank": candidate.search_rank,
+        "evidence_query_count": candidate.evidence_query_count,
         "source_domain": candidate.source_domain,
+        "linkedin_profile_url": candidate.linkedin_profile_url,
+        "linkedin_profile_slug": candidate.linkedin_profile_slug,
         "result_title_raw": candidate.result_title_raw,
         "snippet_raw": candidate.snippet_raw,
+        "evidence_titles": candidate.evidence_titles,
+        "evidence_snippets": candidate.evidence_snippets,
+        "training_signals": candidate.training_signals,
+        "topic_signals": candidate.topic_signals,
+        "functional_signals": candidate.functional_signals,
         "excerto": candidate.excerto,
         "links": [
             {

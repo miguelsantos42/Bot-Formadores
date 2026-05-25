@@ -120,4 +120,20 @@ The user should be able to:
 - see the score and fit rationale;
 - copy the email and LinkedIn message.
 
+## Search philosophy
+This project must optimize for LinkedIn public profile discovery using a recall-then-rerank strategy.
+
+Hard constraints:
+- only target `linkedin.com/in`
+- do not use LinkedIn API
+- do not use user LinkedIn account
+- do not search company pages or general web in this phase
+
+Engineering preference:
+- broaden discovery first
+- delay hard filtering
+- accumulate evidence across multiple queries
+- rerank later
+- keep logic explicit and debuggable
+
 </details>

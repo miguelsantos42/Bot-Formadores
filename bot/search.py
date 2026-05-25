@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import re
+from urllib.parse import urlparse
 
 import requests
 
@@ -11,14 +12,23 @@ from bot.parsing import (
     parse_search_results_html,
 )
 
-MAX_SEARCH_QUERIES = 20
-LINKEDIN_PEOPLE_QUERY_LIMIT = 20
+MAX_SEARCH_QUERIES = 48
 MAX_CONSECUTIVE_PUBLIC_SEARCH_ERRORS = 3
+
+QUERY_BUCKET_QUOTAS = {
+    "topic_training": 10,
+    "topic_role_domain": 10,
+    "topic_pt_en": 8,
+    "topic_training_signals": 8,
+    "topic_location": 6,
+    "exploratory": 6,
+}
 
 PEOPLE_LINKEDIN_TERMS = [
     "formador",
     "formadora",
     "trainer",
+    "instructor",
     "speaker",
     "mentor",
     "coach",
@@ -35,6 +45,43 @@ FREELANCE_LINKEDIN_TERMS = [
     "self employed",
 ]
 
+ROLE_DOMAIN_TERMS = [
+    "specialist",
+    "especialista",
+    "consultant",
+    "consultor",
+    "advisor",
+    "lead",
+    "manager",
+    "head",
+    "director",
+]
+
+TRAINING_SIGNAL_TERMS = [
+    "training",
+    "formação",
+    "workshop",
+    "workshops",
+    "speaker",
+    "mentor",
+    "coach",
+    "facilitator",
+    "instructor",
+]
+
+EXPLORATORY_TERMS = [
+    "people development",
+    "career development",
+    "talent development",
+    "leadership",
+    "productivity",
+    "quality",
+    "marketing strategy",
+    "consultant",
+    "speaker",
+    "workshop",
+]
+
 LINKEDIN_PEOPLE_EXCLUSIONS = [
     "-jobs",
     "-job",
@@ -44,6 +91,26 @@ LINKEDIN_PEOPLE_EXCLUSIONS = [
     "-pulse",
     "-posts",
     "-school",
+]
+
+LINKEDIN_NON_PROFILE_PATH_PARTS = {
+    "company",
+    "jobs",
+    "feed",
+    "posts",
+    "pulse",
+    "school",
+    "learning",
+    "groups",
+}
+
+SEARCH_CHALLENGE_MARKERS = [
+    "captcha",
+    "turnstile",
+    "cfconfig",
+    "challenge/verify",
+    "verificationcomplete",
+    "verificationfailed",
 ]
 
 FREELANCE_SIGNAL_TERMS = [
@@ -101,23 +168,50 @@ def generate_search_queries(request: TrainingRequest) -> list[str]:
     area = request.area_interna.strip()
     location_part = build_location_part(request.localizacao)
     topic_terms = build_topic_terms(topic, area)
+    role_domain_terms = build_role_domain_terms(topic, area)
 
     queries: list[str] = []
+    queries.extend(take_bucket(build_topic_training_queries(topic_terms), "topic_training"))
     queries.extend(
-        build_linkedin_people_queries(topic_terms, location_part)[
-            :LINKEDIN_PEOPLE_QUERY_LIMIT
-        ]
+        take_bucket(
+            build_topic_role_domain_queries(topic_terms, role_domain_terms),
+            "topic_role_domain",
+        )
+    )
+    queries.extend(take_bucket(build_topic_pt_en_queries(topic_terms), "topic_pt_en"))
+    queries.extend(
+        take_bucket(
+            build_topic_training_signal_queries(topic_terms),
+            "topic_training_signals",
+        )
+    )
+    queries.extend(
+        take_bucket(
+            build_topic_location_queries(topic_terms, location_part),
+            "topic_location",
+        )
+    )
+    queries.extend(
+        take_bucket(
+            build_exploratory_linkedin_queries(topic_terms, role_domain_terms),
+            "exploratory",
+        )
     )
 
     return dedupe_preserve_order(queries, limit=MAX_SEARCH_QUERIES)
 
 
+def take_bucket(queries: list[str], bucket_name: str) -> list[str]:
+    return queries[: QUERY_BUCKET_QUOTAS[bucket_name]]
+
+
 def build_topic_terms(topic: str, area: str) -> list[str]:
-    base_terms = [
-        topic,
-        area,
-        f"{topic} {area}",
-    ]
+    clean_topic = topic.strip()
+    clean_area = area.strip()
+    base_terms = [clean_topic]
+    if clean_area:
+        base_terms.extend([clean_area, f"{clean_topic} {clean_area}"])
+
     text = normalize_query_text(f"{topic} {area}")
     expanded_terms = list(base_terms)
 
@@ -139,34 +233,133 @@ def build_topic_terms(topic: str, area: str) -> list[str]:
     return dedupe_preserve_order(expanded_terms, limit=8)
 
 
-def build_linkedin_people_queries(
-    topic_terms: list[str],
-    location_part: str,
-) -> list[str]:
+def build_role_domain_terms(topic: str, area: str) -> list[str]:
+    text = normalize_query_text(f"{topic} {area}")
+    terms = [area.strip()] if area.strip() else []
+
+    if has_any(text, ["rh", "recursos humanos", "human resources"]):
+        terms.extend(["hr", "people", "people development", "talent development"])
+
+    if has_any(text, ["marketing"]):
+        terms.extend(["marketing", "growth", "brand", "marketing strategy"])
+
+    if has_any(text, ["qualidade", "quality"]):
+        terms.extend(["quality", "quality management", "continuous improvement"])
+
+    if has_any(text, ["liderança", "lideranca", "leadership"]):
+        terms.extend(["leadership", "team leadership", "people management"])
+
+    if has_any(text, ["produtividade", "productivity"]):
+        terms.extend(["productivity", "time management", "performance"])
+
+    terms.extend(ROLE_DOMAIN_TERMS)
+    return dedupe_preserve_order(terms, limit=12)
+
+
+def build_topic_training_queries(topic_terms: list[str]) -> list[str]:
     queries: list[str] = []
-    query_patterns = [
-        ("freelancer", "formador"),
-        ("freelance", "trainer"),
-        ("freelancer", "formadora"),
-        ("freelance", "speaker"),
-        ("consultor independente", "workshop"),
-        ("independent consultant", "training"),
-        ("self employed", "mentor"),
-        ("freelancer", "consultant"),
-    ]
-
-    for freelance_term, people_term in query_patterns:
-        quoted_freelance_term = quote_term(freelance_term)
-
-        for term in topic_terms[:8]:
+    for training_term in ["formador", "formadora", "trainer", "speaker", "instructor"]:
+        for term in topic_terms:
             quoted_term = quote_term(term)
             queries.append(
                 build_query(
-                    (
-                        "site:linkedin.com/in "
-                        f"{quoted_term} {quoted_freelance_term} "
-                        f"{people_term}{location_part}"
-                    ),
+                    f"site:linkedin.com/in {quoted_term} {training_term}",
+                    LINKEDIN_PEOPLE_EXCLUSIONS,
+                )
+            )
+
+    return queries
+
+
+def build_topic_role_domain_queries(
+    topic_terms: list[str],
+    role_domain_terms: list[str],
+) -> list[str]:
+    queries: list[str] = []
+    for role_term in role_domain_terms[:8]:
+        for term in topic_terms[:6]:
+            if normalize_query_text(role_term) == normalize_query_text(term):
+                continue
+
+            quoted_term = quote_term(term)
+            queries.append(
+                build_query(
+                    f"site:linkedin.com/in {quoted_term} {quote_term(role_term)}",
+                    LINKEDIN_PEOPLE_EXCLUSIONS,
+                )
+            )
+
+    return queries
+
+
+def build_topic_pt_en_queries(topic_terms: list[str]) -> list[str]:
+    queries: list[str] = []
+    language_signals = ["formação", "training", "consultoria", "consulting"]
+    for language_signal in language_signals:
+        for term in topic_terms:
+            quoted_term = quote_term(term)
+            queries.append(
+                build_query(
+                    f"site:linkedin.com/in {quoted_term} {language_signal}",
+                    LINKEDIN_PEOPLE_EXCLUSIONS,
+                )
+            )
+
+    return queries
+
+
+def build_topic_training_signal_queries(topic_terms: list[str]) -> list[str]:
+    queries: list[str] = []
+    for signal in TRAINING_SIGNAL_TERMS:
+        for term in topic_terms[:6]:
+            quoted_term = quote_term(term)
+            queries.append(
+                build_query(
+                    f"site:linkedin.com/in {quoted_term} {signal}",
+                    LINKEDIN_PEOPLE_EXCLUSIONS,
+                )
+            )
+
+    return queries
+
+
+def build_topic_location_queries(
+    topic_terms: list[str],
+    location_part: str,
+) -> list[str]:
+    if not location_part:
+        return []
+
+    queries: list[str] = []
+    for signal in ["trainer", "formador", "speaker", "consultant"]:
+        for term in topic_terms:
+            quoted_term = quote_term(term)
+            queries.append(
+                build_query(
+                    f"site:linkedin.com/in {quoted_term} {signal}{location_part}",
+                    LINKEDIN_PEOPLE_EXCLUSIONS,
+                )
+            )
+
+    return queries
+
+
+def build_exploratory_linkedin_queries(
+    topic_terms: list[str],
+    role_domain_terms: list[str],
+) -> list[str]:
+    queries: list[str] = []
+    exploratory_terms = dedupe_preserve_order(
+        [*role_domain_terms, *EXPLORATORY_TERMS],
+        limit=16,
+    )
+
+    for term in topic_terms[:4]:
+        for exploratory_term in exploratory_terms:
+            quoted_term = quote_term(term)
+            queries.append(
+                build_query(
+                    f"site:linkedin.com/in {quoted_term} {quote_term(exploratory_term)}",
                     LINKEDIN_PEOPLE_EXCLUSIONS,
                 )
             )
@@ -237,7 +430,7 @@ class MockSearchProvider(SearchProvider):
     def search(self, request: TrainingRequest) -> list[Candidate]:
         queries = generate_search_queries(request)
 
-        return [
+        candidates = [
             Candidate(
                 nome="Ana Silva",
                 cargo=f"Freelance {request.tema_formacao} trainer",
@@ -307,6 +500,22 @@ class MockSearchProvider(SearchProvider):
             ),
         ]
 
+        return [
+            enrich_public_candidate_metadata(
+                candidate=candidate,
+                result=PublicSearchResult(
+                    title=candidate.cargo or candidate.nome,
+                    url=str(candidate.links[0].url),
+                    snippet=candidate.excerto or "",
+                    matched_query=candidate.matched_query or queries[index],
+                    source_domain="linkedin.com",
+                ),
+                search_rank=index + 1,
+                request=request,
+            )
+            for index, candidate in enumerate(candidates)
+        ]
+
 
 class PublicWebSearchProvider(SearchProvider):
     def __init__(
@@ -318,10 +527,12 @@ class PublicWebSearchProvider(SearchProvider):
         self.search_url = search_url
         self.timeout_seconds = timeout_seconds
         self.max_results = max_results
+        self.last_diagnostics: dict[str, int | str | None] = {}
 
     def search(self, request: TrainingRequest) -> list[Candidate]:
-        candidates: list[Candidate] = []
-        seen_urls: set[str] = set()
+        self.reset_diagnostics()
+        candidates_by_key: dict[str, Candidate] = {}
+        candidate_order: list[str] = []
         consecutive_errors = 0
 
         for query in generate_search_queries(request):
@@ -339,24 +550,52 @@ class PublicWebSearchProvider(SearchProvider):
                 if not is_relevant_public_result(result, request):
                     continue
 
-                if result.url in seen_urls:
+                self.increment_diagnostic("eligible_result_count")
+                profile_key = build_linkedin_profile_key(result.url)
+                if profile_key is None:
                     continue
 
-                seen_urls.add(result.url)
-                candidates.append(
-                    enrich_public_candidate_metadata(
-                        candidate=parse_public_result_to_candidate(result),
-                        result=result,
-                        search_rank=search_rank,
-                    )
+                candidate = enrich_public_candidate_metadata(
+                    candidate=parse_public_result_to_candidate(result),
+                    result=result,
+                    search_rank=search_rank,
+                    request=request,
                 )
+                if profile_key in candidates_by_key:
+                    candidates_by_key[profile_key] = merge_candidate_evidence(
+                        candidates_by_key[profile_key],
+                        candidate,
+                    )
+                else:
+                    candidates_by_key[profile_key] = candidate
+                    candidate_order.append(profile_key)
 
-                if len(candidates) >= self.max_results:
-                    return candidates
+        return [
+            candidates_by_key[key]
+            for key in candidate_order[: self.max_results]
+        ]
 
-        return candidates
+    def reset_diagnostics(self) -> None:
+        self.last_diagnostics = {
+            "query_count": 0,
+            "raw_result_count": 0,
+            "eligible_result_count": 0,
+            "blocked_query_count": 0,
+            "block_reason": None,
+        }
+
+    def ensure_diagnostics(self) -> None:
+        if not self.last_diagnostics:
+            self.reset_diagnostics()
+
+    def increment_diagnostic(self, key: str, amount: int = 1) -> None:
+        self.ensure_diagnostics()
+        current_value = self.last_diagnostics.get(key)
+        if isinstance(current_value, int):
+            self.last_diagnostics[key] = current_value + amount
 
     def _fetch_results(self, query: str) -> list[PublicSearchResult]:
+        self.increment_diagnostic("query_count")
         params = {"q": query}
         if "bing.com" in self.search_url:
             params.update(
@@ -380,8 +619,27 @@ class PublicWebSearchProvider(SearchProvider):
             timeout=self.timeout_seconds,
         )
         response.raise_for_status()
+        status_code = getattr(response, "status_code", None)
 
-        return parse_search_results_html(response.text, matched_query=query)
+        if is_search_challenge_html(response.text, status_code=status_code):
+            self.increment_diagnostic("blocked_query_count")
+            self.last_diagnostics["block_reason"] = "captcha_or_search_challenge"
+            return []
+
+        results = parse_search_results_html(response.text, matched_query=query)
+        self.increment_diagnostic("raw_result_count", len(results))
+        return results
+
+
+def is_search_challenge_html(
+    html: str,
+    status_code: int | None = None,
+) -> bool:
+    if status_code == 202:
+        return True
+
+    lowered_html = html.lower()
+    return any(marker in lowered_html for marker in SEARCH_CHALLENGE_MARKERS)
 
 
 def is_relevant_public_result(
@@ -391,12 +649,75 @@ def is_relevant_public_result(
     if is_job_board_result(result):
         return False
 
+    return is_eligible_linkedin_profile_result(result)
+
+
+def is_eligible_linkedin_profile_result(result: PublicSearchResult) -> bool:
     return (
         is_probably_linkedin_profile(result)
-        and has_freelance_signal(result)
-        and has_training_experience_signal(result)
-        and has_topic_experience_signal(result, request)
+        and extract_linkedin_profile_slug(result.url) is not None
+        and not is_irrelevant_linkedin_result(result)
     )
+
+
+def is_irrelevant_linkedin_result(result: PublicSearchResult) -> bool:
+    url = result.url.lower()
+    text = searchable_result_text(result)
+    blocked_terms = [
+        "linkedin job",
+        "jobs on linkedin",
+        "vagas",
+        "ofertas de emprego",
+        "company page",
+        "school page",
+        "pulse",
+        "feed",
+    ]
+
+    if any(f"/{part}/" in url for part in LINKEDIN_NON_PROFILE_PATH_PARTS):
+        return True
+
+    return any(term in text for term in blocked_terms)
+
+
+def build_linkedin_profile_key(raw_url: str) -> str | None:
+    slug = extract_linkedin_profile_slug(raw_url)
+    if slug:
+        return f"linkedin:{slug}"
+
+    return normalize_linkedin_profile_url(raw_url)
+
+
+def normalize_linkedin_profile_url(raw_url: str) -> str | None:
+    slug = extract_linkedin_profile_slug(raw_url)
+    if not slug:
+        return None
+
+    return f"https://www.linkedin.com/in/{slug}"
+
+
+def extract_linkedin_profile_slug(raw_url: str) -> str | None:
+    parsed_url = urlparse(raw_url)
+    domain = parsed_url.netloc.lower().removeprefix("www.")
+    if domain not in {"linkedin.com", "linkedin.pt"}:
+        return None
+
+    path_parts = [
+        part
+        for part in parsed_url.path.split("/")
+        if part
+    ]
+    if len(path_parts) < 2:
+        return None
+
+    if path_parts[0].lower() != "in":
+        return None
+
+    slug = path_parts[1].strip().lower()
+    if not slug or slug in LINKEDIN_NON_PROFILE_PATH_PARTS:
+        return None
+
+    return slug
 
 
 def has_freelance_signal(result: PublicSearchResult) -> bool:
@@ -438,16 +759,145 @@ def enrich_public_candidate_metadata(
     candidate: Candidate,
     result: PublicSearchResult,
     search_rank: int,
+    request: TrainingRequest,
 ) -> Candidate:
+    normalized_profile_url = normalize_linkedin_profile_url(result.url)
+    profile_slug = extract_linkedin_profile_slug(result.url)
+    links = candidate.links
+    if normalized_profile_url:
+        links = [
+            PublicLink(
+                label="LinkedIn",
+                url=normalized_profile_url,
+            )
+        ]
+
     return candidate.model_copy(
         update={
+            "links": links,
             "search_rank": search_rank,
+            "search_ranks": [search_rank],
+            "matched_queries": [result.matched_query],
+            "evidence_titles": [result.title],
+            "evidence_snippets": [result.snippet] if result.snippet else [],
+            "training_signals": collect_training_signals(result),
+            "topic_signals": collect_topic_signals(result, request),
+            "functional_signals": collect_functional_signals(result, request),
+            "evidence_query_count": 1,
             "snippet_raw": result.snippet or None,
             "result_title_raw": result.title,
             "profile_type": detect_profile_type(result),
             "is_probably_linkedin_profile": is_probably_linkedin_profile(result),
+            "linkedin_profile_url": normalized_profile_url,
+            "linkedin_profile_slug": profile_slug,
         }
     )
+
+
+def merge_candidate_evidence(existing: Candidate, incoming: Candidate) -> Candidate:
+    best_candidate = existing
+    if is_better_rank(incoming.search_rank, existing.search_rank):
+        best_candidate = incoming
+
+    merged_queries = merge_unique(existing.matched_queries, incoming.matched_queries)
+    merged_ranks = sorted(set([*existing.search_ranks, *incoming.search_ranks]))
+    merged_titles = merge_unique(existing.evidence_titles, incoming.evidence_titles)
+    merged_snippets = merge_unique(existing.evidence_snippets, incoming.evidence_snippets)
+
+    return existing.model_copy(
+        update={
+            "cargo": best_candidate.cargo or existing.cargo,
+            "empresa": best_candidate.empresa or existing.empresa,
+            "localizacao": best_candidate.localizacao or existing.localizacao,
+            "excerto": best_candidate.excerto or existing.excerto,
+            "matched_query": best_candidate.matched_query or existing.matched_query,
+            "search_rank": best_candidate.search_rank or existing.search_rank,
+            "search_ranks": merged_ranks,
+            "matched_queries": merged_queries,
+            "evidence_titles": merged_titles,
+            "evidence_snippets": merged_snippets,
+            "training_signals": merge_unique(
+                existing.training_signals,
+                incoming.training_signals,
+            ),
+            "topic_signals": merge_unique(
+                existing.topic_signals,
+                incoming.topic_signals,
+            ),
+            "functional_signals": merge_unique(
+                existing.functional_signals,
+                incoming.functional_signals,
+            ),
+            "evidence_query_count": len(merged_queries),
+            "snippet_raw": best_candidate.snippet_raw or existing.snippet_raw,
+            "result_title_raw": best_candidate.result_title_raw
+            or existing.result_title_raw,
+        }
+    )
+
+
+def is_better_rank(new_rank: int | None, existing_rank: int | None) -> bool:
+    if new_rank is None:
+        return False
+
+    if existing_rank is None:
+        return True
+
+    return new_rank < existing_rank
+
+
+def merge_unique(first: list[str], second: list[str]) -> list[str]:
+    merged: list[str] = []
+    for value in [*first, *second]:
+        clean_value = value.strip() if isinstance(value, str) else value
+        if clean_value and clean_value not in merged:
+            merged.append(clean_value)
+
+    return merged
+
+
+def collect_training_signals(result: PublicSearchResult) -> list[str]:
+    text = searchable_result_text(result)
+    return [
+        signal
+        for signal in TRAINING_EXPERIENCE_SIGNAL_TERMS
+        if signal in text
+    ]
+
+
+def collect_topic_signals(
+    result: PublicSearchResult,
+    request: TrainingRequest,
+) -> list[str]:
+    text = searchable_result_text(result)
+    topic = normalize_query_text(request.tema_formacao)
+    topic_tokens = [
+        token
+        for token in re.findall(r"[\w+#.-]+", topic)
+        if len(token) >= 2
+    ]
+    signals = [topic] if topic and topic in text else []
+    signals.extend(token for token in topic_tokens if token in text)
+    return dedupe_preserve_order(signals, limit=12)
+
+
+def collect_functional_signals(
+    result: PublicSearchResult,
+    request: TrainingRequest,
+) -> list[str]:
+    text = searchable_result_text(result)
+    area = normalize_query_text(request.area_interna)
+    if not area:
+        return []
+
+    area_tokens = [
+        token
+        for token in re.findall(r"[\w+#.-]+", area)
+        if len(token) >= 2
+    ]
+    signals = [area] if area in text else []
+    signals.extend(token for token in area_tokens if token in text)
+    return dedupe_preserve_order(signals, limit=12)
 
 
 def detect_profile_type(result: PublicSearchResult) -> ProfileType:
@@ -477,10 +927,7 @@ def detect_profile_type(result: PublicSearchResult) -> ProfileType:
 
 
 def is_probably_linkedin_profile(result: PublicSearchResult) -> bool:
-    return (
-        "linkedin.com" in result.source_domain.lower()
-        and "/in/" in result.url.lower()
-    )
+    return extract_linkedin_profile_slug(result.url) is not None
 
 
 def is_job_board_result(result: PublicSearchResult) -> bool:

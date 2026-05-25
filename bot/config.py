@@ -17,7 +17,7 @@ class Settings:
     public_search_url: str
     public_search_timeout_seconds: int
     public_search_max_results: int
-    public_search_fallback_to_mock: bool = True
+    public_search_fallback_to_mock: bool = False
 
 
 def get_settings() -> Settings:
@@ -30,9 +30,9 @@ def get_settings() -> Settings:
             "https://www.bing.com/search",
         ),
         public_search_timeout_seconds=int(os.getenv("PUBLIC_SEARCH_TIMEOUT_SECONDS", "10")),
-        public_search_max_results=int(os.getenv("PUBLIC_SEARCH_MAX_RESULTS", "10")),
+        public_search_max_results=int(os.getenv("PUBLIC_SEARCH_MAX_RESULTS", "25")),
         public_search_fallback_to_mock=parse_bool(
-            os.getenv("PUBLIC_SEARCH_FALLBACK_TO_MOCK", "true")
+            os.getenv("PUBLIC_SEARCH_FALLBACK_TO_MOCK", "false")
         ),
     )
 

@@ -111,11 +111,21 @@ def build_search_run(request: TrainingRequest, settings: Settings | None = None)
     settings = settings or get_settings()
     provider = get_search_provider(settings)
     candidates = provider.search(request)
+    provider_diagnostics = getattr(provider, "last_diagnostics", {})
     diagnostics = SearchDiagnostics(
         provider=settings.search_provider,
         public_candidate_count=(
             len(candidates) if settings.search_provider == "public_web" else 0
         ),
+        query_count=int(provider_diagnostics.get("query_count", 0) or 0),
+        raw_result_count=int(provider_diagnostics.get("raw_result_count", 0) or 0),
+        eligible_result_count=int(
+            provider_diagnostics.get("eligible_result_count", 0) or 0
+        ),
+        blocked_query_count=int(
+            provider_diagnostics.get("blocked_query_count", 0) or 0
+        ),
+        block_reason=provider_diagnostics.get("block_reason") or None,
     )
 
     if should_use_mock_fallback(settings, candidates):
@@ -407,7 +417,7 @@ def render_sidebar(settings: Settings) -> bool:
         st.write(f"Provider ativo: **{get_provider_label(settings)}**")
         st.write(f"Base de dados: `{settings.database_path}`")
         if settings.search_provider == "public_web":
-            st.write("Critério: **LinkedIn pessoal + freelancer + experiência no tema**")
+            st.write("Critério: **LinkedIn pessoal + recall/rerank**")
             fallback_label = (
                 "ativo" if settings.public_search_fallback_to_mock else "inativo"
             )
@@ -424,13 +434,13 @@ def render_request_form() -> tuple[bool, dict[str, Any]]:
         st.subheader("Pedido de formação")
 
         tema_formacao = st.text_input("Tema da formação")
-        area_interna = st.text_input("Área interna")
-        descricao_contexto = st.text_area("Descrição do contexto", height=120)
+        area_interna = st.text_input("Área interna (opcional)")
+        descricao_contexto = st.text_area("Descrição do contexto (opcional)", height=120)
 
         col1, col2 = st.columns(2)
         with col1:
-            localizacao = st.text_input("Localização")
-            duracao = st.text_input("Duração")
+            localizacao = st.text_input("Localização (opcional)")
+            duracao = st.text_input("Duração (opcional)")
 
         with col2:
             formato = st.selectbox(
@@ -440,7 +450,7 @@ def render_request_form() -> tuple[bool, dict[str, Any]]:
                 format_func=lambda format_item: FORMAT_LABELS[format_item],
             )
             numero_participantes = st.number_input(
-                "Número de participantes",
+                "Número de participantes (opcional)",
                 min_value=0,
                 step=1,
                 value=0,
@@ -462,8 +472,8 @@ def render_request_form() -> tuple[bool, dict[str, Any]]:
 def build_training_request(form_data: dict[str, Any]) -> TrainingRequest:
     return TrainingRequest(
         tema_formacao=form_data["tema_formacao"],
-        area_interna=form_data["area_interna"],
-        descricao_contexto=form_data["descricao_contexto"],
+        area_interna=form_data["area_interna"] or "",
+        descricao_contexto=form_data["descricao_contexto"] or "",
         localizacao=form_data["localizacao"] or None,
         formato=form_data["formato"],
         duracao=form_data["duracao"] or None,
@@ -492,10 +502,26 @@ def render_search_diagnostics(search_run: SearchRun) -> None:
         return
 
     if diagnostics.fallback_used:
+        if diagnostics.block_reason:
+            st.warning(
+                "O motor de busca bloqueou a pesquisa automática com captcha/desafio. "
+                "Para conseguires testar o fluxo completo, estou a mostrar candidatos "
+                "de demonstração."
+            )
+            return
+
         st.warning(
             "A pesquisa pública não encontrou candidatos aproveitáveis. "
             "Para conseguires testar o fluxo completo, estou a mostrar candidatos "
             "de demonstração."
+        )
+        return
+
+    if diagnostics.provider == "public_web" and diagnostics.block_reason:
+        st.warning(
+            "O motor de busca bloqueou a pesquisa automática com captcha/desafio. "
+            "A app não recebeu resultados públicos para analisar. Usa o mock para "
+            "testar o fluxo ou configura uma Search API para pesquisa real estável."
         )
         return
 

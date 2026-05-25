@@ -36,24 +36,32 @@ streamlit run app.py --server.port 8502
 
 ## Pesquisa pública e fallback
 
-Por defeito, a app tenta usar pesquisa pública via Bing com um critério
-restrito:
+Só o campo `Tema da formação` é obrigatório. Os restantes campos servem apenas
+para afinar a pesquisa quando fizer sentido.
+
+Por defeito, a app tenta usar pesquisa pública via Bing com estratégia
+LinkedIn-only recall-then-rerank:
 
 - só perfis pessoais de LinkedIn (`linkedin.com/in`);
-- têm de ter sinal público de freelancer/independente;
-- têm de ter sinal de experiência em formação, como formador, trainer,
-  speaker, mentor ou workshop;
-- o título ou snippet público tem de referir o tópico da formação.
+- não pesquisa empresas, jobs, posts, feed, pulse, school, blogs ou sites externos;
+- gera queries por buckets com PT + EN, sinais de formação, função/domínio,
+  localização e queries exploratórias;
+- deixa entrar perfis plausíveis com filtro mínimo;
+- junta evidência quando o mesmo perfil aparece em várias queries;
+- ranqueia depois por qualidade LinkedIn, match temático, sinais de formador,
+  evidência multi-query, slug LinkedIn e localização.
 
 ```env
 SEARCH_PROVIDER=public_web
 PUBLIC_SEARCH_URL=https://www.bing.com/search
 PUBLIC_SEARCH_TIMEOUT_SECONDS=5
-PUBLIC_SEARCH_FALLBACK_TO_MOCK=true
+PUBLIC_SEARCH_MAX_RESULTS=25
+PUBLIC_SEARCH_FALLBACK_TO_MOCK=false
 ```
 
-Se a pesquisa pública não encontrar candidatos aproveitáveis, o fallback mostra
-candidatos de demonstração para permitir testar o fluxo completo da app.
+Com `PUBLIC_SEARCH_FALLBACK_TO_MOCK=false`, a app não inventa candidatos: se a
+pesquisa pública não encontrar perfis pessoais públicos do LinkedIn que passem
+o filtro mínimo, mostra zero candidatos.
 
 Para testar só com dados fictícios:
 
@@ -61,8 +69,8 @@ Para testar só com dados fictícios:
 SEARCH_PROVIDER=mock
 ```
 
-Para desativar o fallback e ver zero candidatos quando a pesquisa pública falhar:
+Para voltar a permitir dados de demonstração quando a pesquisa pública falhar:
 
 ```env
-PUBLIC_SEARCH_FALLBACK_TO_MOCK=false
+PUBLIC_SEARCH_FALLBACK_TO_MOCK=true
 ```

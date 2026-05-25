@@ -12,10 +12,14 @@ from bot.scoring import (
     calculate_thematic_fit,
     calculate_training_experience,
     linkedin_profile_quality_score,
+    linkedin_slug_confidence_score,
     calculate_location_score,
+    multi_query_evidence_score,
     recommend_contact_channel,
+    semantic_topic_match_score,
     score_candidates,
     score_candidate,
+    trainer_signal_score,
 )
 
 
@@ -441,3 +445,116 @@ def test_strong_public_linkedin_profile_without_email_remains_competitive() -> N
 
     assert scored[0].candidato.nome == "Ana Silva"
     assert scored[0].canal_recomendado == ContactChannel.linkedin
+
+
+def test_multi_query_evidence_increases_score() -> None:
+    request = make_request()
+    single_query_candidate = Candidate(
+        nome="Ana Silva",
+        cargo="Python Trainer",
+        links=[PublicLink(label="LinkedIn", url="https://www.linkedin.com/in/ana-silva")],
+        fonte="public_web",
+        result_title_raw="Ana Silva - Python Trainer | LinkedIn",
+        snippet_raw="Trainer for Python workshops.",
+        profile_type=ProfileType.linkedin_profile,
+        is_probably_linkedin_profile=True,
+        linkedin_profile_slug="ana-silva",
+        linkedin_profile_url="https://www.linkedin.com/in/ana-silva",
+        search_rank=4,
+        evidence_query_count=1,
+        matched_queries=["site:linkedin.com/in Python trainer"],
+        training_signals=["trainer"],
+        topic_signals=["python"],
+    )
+    multi_query_candidate = single_query_candidate.model_copy(
+        update={
+            "nome": "Joao Pereira",
+            "linkedin_profile_slug": "joao-pereira",
+            "linkedin_profile_url": "https://www.linkedin.com/in/joao-pereira",
+            "evidence_query_count": 4,
+            "search_rank": 1,
+            "matched_queries": [
+                "site:linkedin.com/in Python trainer",
+                "site:linkedin.com/in Python speaker",
+                "site:linkedin.com/in Python workshop",
+                "site:linkedin.com/in Python mentor",
+            ],
+            "training_signals": ["trainer", "speaker", "workshop", "mentor"],
+        }
+    )
+
+    assert multi_query_evidence_score(multi_query_candidate) > multi_query_evidence_score(
+        single_query_candidate
+    )
+    assert (
+        score_candidate(request, multi_query_candidate).score.score_total
+        > score_candidate(request, single_query_candidate).score.score_total
+    )
+
+
+def test_trainer_and_topic_signals_drive_linkedin_first_components() -> None:
+    request = make_request()
+    candidate = Candidate(
+        nome="Ana Silva",
+        cargo="Python Trainer",
+        links=[PublicLink(label="LinkedIn", url="https://www.linkedin.com/in/ana-silva")],
+        fonte="public_web",
+        result_title_raw="Ana Silva - Python Trainer and Speaker | LinkedIn",
+        snippet_raw="Workshop mentor and facilitator for Python teams.",
+        profile_type=ProfileType.linkedin_profile,
+        is_probably_linkedin_profile=True,
+        linkedin_profile_slug="ana-silva",
+        linkedin_profile_url="https://www.linkedin.com/in/ana-silva",
+        training_signals=["trainer", "speaker", "workshop", "mentor"],
+        topic_signals=["python"],
+        evidence_query_count=3,
+        search_rank=2,
+    )
+
+    score = score_candidate(request, candidate).score
+
+    assert semantic_topic_match_score(request, candidate) >= 84
+    assert trainer_signal_score(candidate) >= 92
+    assert linkedin_profile_quality_score(candidate) >= 90
+    assert linkedin_slug_confidence_score(candidate) >= 90
+    assert score.semantic_topic_match_score == score.fit_tematico
+    assert score.trainer_signal_score == score.experiencia_formacao
+    assert score.multi_query_evidence_score >= 80
+
+
+def test_generic_linkedin_profile_descends_against_aligned_trainer() -> None:
+    request = make_request()
+    generic_profile = Candidate(
+        nome="Carlos Lima",
+        cargo="Technology Manager",
+        links=[PublicLink(label="LinkedIn", url="https://www.linkedin.com/in/carlos-lima")],
+        fonte="public_web",
+        result_title_raw="Carlos Lima - Technology Manager | LinkedIn",
+        snippet_raw="Manager with broad technology experience.",
+        profile_type=ProfileType.linkedin_profile,
+        is_probably_linkedin_profile=True,
+        linkedin_profile_slug="carlos-lima",
+        linkedin_profile_url="https://www.linkedin.com/in/carlos-lima",
+        evidence_query_count=1,
+        search_rank=2,
+    )
+    aligned_trainer = Candidate(
+        nome="Ana Silva",
+        cargo="Python Trainer",
+        links=[PublicLink(label="LinkedIn", url="https://www.linkedin.com/in/ana-silva")],
+        fonte="public_web",
+        result_title_raw="Ana Silva - Python Trainer | LinkedIn",
+        snippet_raw="Speaker, mentor and workshop facilitator for Python.",
+        profile_type=ProfileType.linkedin_profile,
+        is_probably_linkedin_profile=True,
+        linkedin_profile_slug="ana-silva",
+        linkedin_profile_url="https://www.linkedin.com/in/ana-silva",
+        training_signals=["trainer", "speaker", "mentor", "workshop"],
+        topic_signals=["python"],
+        evidence_query_count=2,
+        search_rank=3,
+    )
+
+    scored = score_candidates(request, [generic_profile, aligned_trainer])
+
+    assert scored[0].candidato.nome == "Ana Silva"

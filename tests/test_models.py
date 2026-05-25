@@ -39,6 +39,15 @@ def test_training_request_accepts_short_acronym_topic() -> None:
     assert request.tema_formacao == "AI"
 
 
+def test_training_request_only_requires_topic() -> None:
+    request = TrainingRequest(tema_formacao="Power BI")
+
+    assert request.tema_formacao == "Power BI"
+    assert request.area_interna == ""
+    assert request.descricao_contexto == ""
+    assert request.localizacao is None
+
+
 def test_training_request_rejects_invalid_participant_count() -> None:
     with pytest.raises(ValidationError):
         TrainingRequest(
@@ -92,6 +101,11 @@ def test_candidate_defaults_public_profile_metadata() -> None:
     )
 
     assert candidate.search_rank is None
+    assert candidate.search_ranks == []
+    assert candidate.matched_queries == []
+    assert candidate.evidence_query_count == 0
+    assert candidate.training_signals == []
+    assert candidate.topic_signals == []
     assert candidate.snippet_raw is None
     assert candidate.result_title_raw is None
     assert candidate.profile_type == ProfileType.unknown

@@ -81,20 +81,29 @@ def score_candidate(
     request: TrainingRequest,
     candidate: Candidate,
 ) -> ScoredCandidate:
-    fit_tematico = calculate_thematic_fit(request, candidate)
+    semantic_topic_score = semantic_topic_match_score(request, candidate)
+    linkedin_quality_score = linkedin_profile_quality_score(candidate)
+    trainer_score = trainer_signal_score(candidate)
+    multi_query_score = multi_query_evidence_score(candidate)
+    slug_confidence_score = linkedin_slug_confidence_score(candidate)
+    improved_location = calculate_location_score(request, candidate)
+
+    fit_tematico = semantic_topic_score
     fit_funcional = calculate_functional_fit(request, candidate)
-    experiencia_formacao = calculate_training_experience(candidate)
-    localizacao_score = calculate_location_score(request, candidate)
+    experiencia_formacao = trainer_score
+    localizacao_score = improved_location
     contactabilidade = calculate_contactability(candidate)
     credibilidade_publica = calculate_public_credibility(candidate)
 
     base_score_total = round(
-        fit_tematico * 0.30
-        + fit_funcional * 0.20
-        + experiencia_formacao * 0.15
-        + localizacao_score * 0.10
-        + contactabilidade * 0.15
-        + credibilidade_publica * 0.10
+        semantic_topic_score * 0.25
+        + trainer_score * 0.20
+        + linkedin_quality_score * 0.15
+        + multi_query_score * 0.15
+        + fit_funcional * 0.10
+        + improved_location * 0.05
+        + slug_confidence_score * 0.05
+        + contactabilidade * 0.05
     )
     score_total = clamp_score(
         base_score_total + profile_type_adjustment(candidate)
@@ -107,6 +116,12 @@ def score_candidate(
         localizacao_score=localizacao_score,
         contactabilidade=contactabilidade,
         credibilidade_publica=credibilidade_publica,
+        linkedin_profile_quality_score=linkedin_quality_score,
+        semantic_topic_match_score=semantic_topic_score,
+        trainer_signal_score=trainer_score,
+        multi_query_evidence_score=multi_query_score,
+        linkedin_slug_confidence_score=slug_confidence_score,
+        improved_location_score=improved_location,
         score_total=score_total,
         motivo=build_score_reason(
             fit_tematico=fit_tematico,
@@ -124,6 +139,43 @@ def score_candidate(
 
 
 def calculate_thematic_fit(
+    request: TrainingRequest,
+    candidate: Candidate,
+) -> int:
+    return semantic_topic_match_score(request, candidate)
+
+
+def semantic_topic_match_score(
+    request: TrainingRequest,
+    candidate: Candidate,
+) -> int:
+    evidence_text = candidate_evidence_text(candidate)
+    query_text = normalize_text(" ".join([*candidate.matched_queries, candidate.matched_query or ""]))
+    topic = normalize_text(request.tema_formacao)
+    topic_terms = [term for term in topic.split() if len(term) >= 2]
+
+    if candidate.topic_signals:
+        return 92 if len(candidate.topic_signals) >= 2 else 84
+
+    if topic and topic in evidence_text:
+        return 92
+
+    if topic_terms and all(term in evidence_text for term in topic_terms):
+        return 84
+
+    if topic_terms and any(term in evidence_text for term in topic_terms):
+        return 68
+
+    if topic and topic in query_text:
+        return 58
+
+    if topic_terms and any(term in query_text for term in topic_terms):
+        return 50
+
+    return 35
+
+
+def calculate_legacy_thematic_fit(
     request: TrainingRequest,
     candidate: Candidate,
 ) -> int:
@@ -182,6 +234,12 @@ def calculate_functional_fit(
     area = normalize_text(request.area_interna)
     training_signal = trainer_signal_score(candidate)
 
+    if candidate.functional_signals:
+        return 92 if training_signal >= 80 else 82
+
+    if not area:
+        return 72 if training_signal >= 80 else 62
+
     if area in text and training_signal >= 80:
         return 90
 
@@ -205,6 +263,13 @@ def trainer_signal_score(candidate: Candidate) -> int:
     text = candidate_public_text(candidate)
     primary_matches = count_matches(text, PRIMARY_TRAINING_SIGNALS)
     secondary_matches = count_matches(text, SECONDARY_TRAINING_SIGNALS)
+    accumulated_matches = len(candidate.training_signals)
+
+    if accumulated_matches >= 4:
+        return 98
+
+    if accumulated_matches >= 2:
+        return 92
 
     if primary_matches >= 2:
         return 95
@@ -229,7 +294,7 @@ def calculate_location_score(
     candidate: Candidate,
 ) -> int:
     if not request.localizacao:
-        return 70
+        return 76
 
     requested_location = normalize_text(request.localizacao)
     candidate_location_text = normalize_text(
@@ -284,7 +349,7 @@ def calculate_contactability(candidate: Candidate) -> int:
         return 100
 
     if has_linkedin_profile(candidate):
-        return 85
+        return 88
 
     if has_linkedin(candidate):
         return 75
@@ -298,9 +363,6 @@ def calculate_contactability(candidate: Candidate) -> int:
 def calculate_public_credibility(candidate: Candidate) -> int:
     score = linkedin_profile_quality_score(candidate)
 
-    if candidate.profile_type == ProfileType.personal_site:
-        score = max(score, 70)
-
     if candidate.links:
         score += 5
 
@@ -313,21 +375,26 @@ def calculate_public_credibility(candidate: Candidate) -> int:
     if trainer_signal_score(candidate) >= 80:
         score += 7
 
-    if candidate.search_rank is not None and candidate.search_rank <= 3:
-        score += 5
+    score += round((multi_query_evidence_score(candidate) - 50) * 0.15)
 
     return clamp_score(score)
 
 
 def linkedin_profile_quality_score(candidate: Candidate) -> int:
     if has_linkedin_profile(candidate):
-        score = 82
+        score = 78
 
         if candidate.is_probably_linkedin_profile:
-            score += 8
+            score += 7
 
         if candidate.profile_type == ProfileType.linkedin_profile:
             score += 6
+
+        if candidate.linkedin_profile_slug:
+            score += 6
+
+        if candidate.evidence_titles or candidate.evidence_snippets:
+            score += 4
 
         if candidate.search_rank == 1:
             score += 4
@@ -354,15 +421,56 @@ def linkedin_profile_quality_score(candidate: Candidate) -> int:
     return 35
 
 
+def multi_query_evidence_score(candidate: Candidate) -> int:
+    query_count = candidate.evidence_query_count or len(candidate.matched_queries)
+    best_rank = candidate.search_rank
+
+    if query_count >= 6:
+        score = 96
+    elif query_count >= 4:
+        score = 90
+    elif query_count >= 3:
+        score = 82
+    elif query_count == 2:
+        score = 72
+    elif query_count == 1:
+        score = 56
+    else:
+        score = 42
+
+    if best_rank == 1:
+        score += 4
+    elif best_rank is not None and best_rank <= 3:
+        score += 2
+
+    return clamp_score(score)
+
+
+def linkedin_slug_confidence_score(candidate: Candidate) -> int:
+    if candidate.linkedin_profile_slug and candidate.linkedin_profile_url:
+        return 96
+
+    if candidate.linkedin_profile_slug:
+        return 90
+
+    if has_linkedin_profile(candidate):
+        return 78
+
+    if has_linkedin(candidate):
+        return 55
+
+    return 25
+
+
 def profile_type_adjustment(candidate: Candidate) -> int:
     if candidate.profile_type == ProfileType.linkedin_profile:
-        return 5
-
-    if candidate.profile_type == ProfileType.personal_site:
         return 3
 
+    if candidate.profile_type == ProfileType.personal_site:
+        return -10
+
     if candidate.profile_type == ProfileType.company_page:
-        return -8
+        return -18
 
     if candidate.profile_type == ProfileType.article_or_post:
         return -12
@@ -461,7 +569,34 @@ def candidate_public_text(candidate: Candidate) -> str:
                 candidate.result_title_raw or "",
                 candidate.snippet_raw or "",
                 candidate.matched_query or "",
+                " ".join(candidate.matched_queries),
+                " ".join(candidate.evidence_titles),
+                " ".join(candidate.evidence_snippets),
+                " ".join(candidate.training_signals),
+                " ".join(candidate.topic_signals),
+                " ".join(candidate.functional_signals),
                 candidate.source_domain or "",
+            ]
+        )
+    )
+
+
+def candidate_evidence_text(candidate: Candidate) -> str:
+    return normalize_text(
+        " ".join(
+            [
+                candidate.nome,
+                candidate.cargo or "",
+                candidate.empresa or "",
+                candidate.localizacao or "",
+                candidate.excerto or "",
+                candidate.result_title_raw or "",
+                candidate.snippet_raw or "",
+                " ".join(candidate.evidence_titles),
+                " ".join(candidate.evidence_snippets),
+                " ".join(candidate.training_signals),
+                " ".join(candidate.topic_signals),
+                " ".join(candidate.functional_signals),
             ]
         )
     )

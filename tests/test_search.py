@@ -4,12 +4,15 @@ from bot.config import Settings
 from bot.models import ProfileType, TrainingFormat, TrainingRequest
 from bot.search import (
     MAX_CONSECUTIVE_PUBLIC_SEARCH_ERRORS,
+    MAX_SEARCH_QUERIES,
     MockSearchProvider,
     PublicWebSearchProvider,
+    QUERY_BUCKET_QUOTAS,
     build_topic_terms,
     detect_profile_type,
     dedupe_preserve_order,
     enrich_public_candidate_metadata,
+    extract_linkedin_profile_slug,
     generate_search_queries,
     get_search_provider,
     has_freelance_signal,
@@ -18,6 +21,9 @@ from bot.search import (
     is_job_board_result,
     is_probably_linkedin_profile,
     is_relevant_public_result,
+    is_search_challenge_html,
+    merge_candidate_evidence,
+    normalize_linkedin_profile_url,
 )
 from bot.parsing import PublicSearchResult
 
@@ -39,11 +45,11 @@ def test_generate_search_queries_uses_request_fields() -> None:
 
     queries = generate_search_queries(request)
 
-    assert len(queries) == 20
+    assert len(queries) <= MAX_SEARCH_QUERIES
+    assert len(queries) >= 30
     assert "Python" in queries[0]
-    assert "Porto" in queries[0]
+    assert any("Porto" in query for query in queries)
     assert queries[0].startswith("site:linkedin.com/in")
-    assert "freelancer" in queries[0]
     assert "formador" in queries[0]
 
 
@@ -56,8 +62,21 @@ def test_generate_search_queries_without_location() -> None:
 
     queries = generate_search_queries(request)
 
-    assert len(queries) == 20
+    assert len(queries) <= MAX_SEARCH_QUERIES
+    assert len(queries) >= 30
     assert "Data Science" in queries[0]
+    assert all("  " not in query for query in queries)
+
+
+def test_generate_search_queries_only_need_topic() -> None:
+    request = TrainingRequest(tema_formacao="Power BI")
+
+    queries = generate_search_queries(request)
+
+    assert len(queries) <= MAX_SEARCH_QUERIES
+    assert len(queries) >= 20
+    assert all(query.startswith("site:linkedin.com/in") for query in queries)
+    assert all("Power BI" in query for query in queries)
     assert all("  " not in query for query in queries)
 
 
@@ -68,26 +87,19 @@ def test_generate_search_queries_are_ordered_by_priority() -> None:
 
     assert all(query.startswith("site:linkedin.com/in") for query in queries)
     assert all("site:linkedin.com/company" not in query for query in queries)
-    assert all(
-        any(
-            term in query
-            for term in [
-                "freelance",
-                "freelancer",
-                "independente",
-                "independent",
-                "self employed",
-            ]
-        )
-        for query in queries
-    )
+    assert queries[0].endswith("-jobs -job -careers -company -companies -pulse -posts -school")
+    assert "formador" in queries[0]
+    assert any("training" in query for query in queries)
+    assert any("speaker" in query for query in queries)
 
 
 def test_generate_search_queries_respect_group_quotas() -> None:
     queries = generate_search_queries(make_request())
 
-    assert sum(query.startswith("site:linkedin.com/in") for query in queries) == 20
-    assert len(queries) == 20
+    assert sum(query.startswith("site:linkedin.com/in") for query in queries) == len(queries)
+    assert len(queries) <= MAX_SEARCH_QUERIES
+    assert len(queries) >= 30
+    assert sum(QUERY_BUCKET_QUOTAS.values()) == MAX_SEARCH_QUERIES
 
 
 def test_generate_search_queries_use_linkedin_profile_exclusions() -> None:
@@ -119,7 +131,8 @@ def test_generate_search_queries_expand_hr_terms_with_controlled_limit() -> None
     assert "career development" in topic_terms
     assert "gestão de carreira" in topic_terms
     assert any('"recursos humanos"' in query for query in queries)
-    assert len(queries) == 20
+    assert len(queries) <= MAX_SEARCH_QUERIES
+    assert len(queries) >= 30
     assert len(queries) == len(set(queries))
 
 
@@ -148,7 +161,8 @@ def test_generate_search_queries_expand_marketing_terms() -> None:
     assert "strategic marketing" in topic_terms
     assert "marketing strategy" in topic_terms
     assert any('"strategic marketing"' in query for query in queries)
-    assert len(queries) == 20
+    assert len(queries) <= MAX_SEARCH_QUERIES
+    assert len(queries) >= 30
 
 
 def test_dedupe_preserve_order_keeps_first_values() -> None:
@@ -266,6 +280,54 @@ def test_public_web_search_provider_returns_candidates(monkeypatch) -> None:
     assert candidates[0].snippet_raw == "Freelance trainer and speaker for Python workshops."
     assert candidates[0].profile_type == ProfileType.linkedin_profile
     assert candidates[0].is_probably_linkedin_profile is True
+    assert candidates[0].linkedin_profile_url == "https://www.linkedin.com/in/ana-silva"
+    assert candidates[0].linkedin_profile_slug == "ana-silva"
+    assert provider.last_diagnostics["query_count"] >= 1
+    assert provider.last_diagnostics["raw_result_count"] >= 1
+    assert provider.last_diagnostics["eligible_result_count"] >= 1
+    assert provider.last_diagnostics["blocked_query_count"] == 0
+
+
+def test_search_challenge_html_is_detected() -> None:
+    html = """
+    <html>
+      <script>var CfConfig = {"path": "/challenge/verify"};</script>
+      <div>captcha verification</div>
+    </html>
+    """
+
+    assert is_search_challenge_html(html)
+    assert is_search_challenge_html("<html></html>", status_code=202)
+
+
+def test_public_web_search_provider_records_search_challenge(monkeypatch) -> None:
+    class FakeResponse:
+        text = """
+        <html>
+          <script>var CfConfig = {"path": "/challenge/verify"};</script>
+          <div>Turnstile captcha</div>
+        </html>
+        """
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_get(*args, **kwargs):
+        return FakeResponse()
+
+    monkeypatch.setattr("bot.search.requests.get", fake_get)
+
+    provider = PublicWebSearchProvider(max_results=5)
+    candidates = provider.search(make_request())
+    query_count = len(generate_search_queries(make_request()))
+
+    assert candidates == []
+    assert provider.last_diagnostics["query_count"] == query_count
+    assert provider.last_diagnostics["raw_result_count"] == 0
+    assert provider.last_diagnostics["eligible_result_count"] == 0
+    assert provider.last_diagnostics["blocked_query_count"] == query_count
+    assert provider.last_diagnostics["block_reason"] == "captcha_or_search_challenge"
 
 
 def test_public_web_search_provider_filters_irrelevant_results(monkeypatch) -> None:
@@ -330,6 +392,46 @@ def test_public_web_search_provider_deduplicates_by_url(monkeypatch) -> None:
 
     assert len(candidates) == 1
     assert candidates[0].nome == "Ana Silva"
+
+
+def test_public_web_search_provider_deduplicates_equivalent_linkedin_urls(
+    monkeypatch,
+) -> None:
+    html = """
+    <div class="result">
+      <a class="result__a" href="https://www.linkedin.com/in/ana-silva/?trk=public_profile">
+        Ana Silva - Python Trainer | LinkedIn
+      </a>
+      <a class="result__snippet">Python trainer and speaker.</a>
+    </div>
+    <div class="result">
+      <a class="result__a" href="https://linkedin.com/in/ana-silva#experience">
+        Ana Silva - Python Instructor | LinkedIn
+      </a>
+      <a class="result__snippet">Python instructor and mentor.</a>
+    </div>
+    """
+
+    class FakeResponse:
+        text = html
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_get(*args, **kwargs):
+        return FakeResponse()
+
+    monkeypatch.setattr("bot.search.requests.get", fake_get)
+
+    provider = PublicWebSearchProvider(max_results=5)
+    candidates = provider.search(make_request())
+
+    assert len(candidates) == 1
+    assert candidates[0].linkedin_profile_url == "https://www.linkedin.com/in/ana-silva"
+    assert candidates[0].linkedin_profile_slug == "ana-silva"
+    assert candidates[0].evidence_query_count > 1
+    assert candidates[0].search_rank == 1
+    assert len(candidates[0].evidence_titles) == 2
 
 
 def test_public_web_search_provider_continues_after_request_error(monkeypatch) -> None:
@@ -429,7 +531,7 @@ def test_linkedin_profile_result_is_relevant() -> None:
     assert has_topic_experience_signal(result, make_request())
 
 
-def test_linkedin_profile_without_freelance_signal_is_not_relevant() -> None:
+def test_linkedin_profile_without_freelance_signal_is_still_eligible() -> None:
     result = PublicSearchResult(
         title="Ana Silva - Python Trainer",
         url="https://www.linkedin.com/in/ana-silva",
@@ -438,10 +540,10 @@ def test_linkedin_profile_without_freelance_signal_is_not_relevant() -> None:
         source_domain="linkedin.com",
     )
 
-    assert not is_relevant_public_result(result, make_request())
+    assert is_relevant_public_result(result, make_request())
 
 
-def test_linkedin_profile_without_topic_evidence_is_not_relevant() -> None:
+def test_linkedin_profile_without_topic_evidence_is_still_eligible() -> None:
     result = PublicSearchResult(
         title="Ana Silva - Freelance JavaScript Trainer",
         url="https://www.linkedin.com/in/ana-silva",
@@ -450,7 +552,14 @@ def test_linkedin_profile_without_topic_evidence_is_not_relevant() -> None:
         source_domain="linkedin.com",
     )
 
-    assert not is_relevant_public_result(result, make_request())
+    assert is_relevant_public_result(result, make_request())
+
+
+def test_normalize_linkedin_profile_url_removes_params_fragments_and_trailing_path() -> None:
+    url = "https://www.linkedin.com/in/Ana-Silva/details/experience/?trk=abc#section"
+
+    assert normalize_linkedin_profile_url(url) == "https://www.linkedin.com/in/ana-silva"
+    assert extract_linkedin_profile_slug(url) == "ana-silva"
 
 
 def test_company_linkedin_page_is_not_relevant_even_with_training_terms() -> None:
@@ -530,6 +639,7 @@ def test_enrich_public_candidate_metadata_preserves_query_and_source() -> None:
         candidate=candidate,
         result=result,
         search_rank=2,
+        request=make_request(),
     )
 
     assert enriched_candidate.matched_query == candidate.matched_query
@@ -538,3 +648,50 @@ def test_enrich_public_candidate_metadata_preserves_query_and_source() -> None:
     assert enriched_candidate.result_title_raw == result.title
     assert enriched_candidate.snippet_raw == result.snippet
     assert enriched_candidate.profile_type == ProfileType.linkedin_profile
+    assert enriched_candidate.search_ranks == [2]
+    assert enriched_candidate.matched_queries == [result.matched_query]
+    assert enriched_candidate.evidence_titles == [result.title]
+    assert enriched_candidate.evidence_snippets == [result.snippet]
+    assert "trainer" in enriched_candidate.training_signals
+    assert "python" in enriched_candidate.topic_signals
+    assert enriched_candidate.evidence_query_count == 1
+
+
+def test_merge_candidate_evidence_preserves_best_rank_and_distinct_queries() -> None:
+    request = make_request()
+    first = enrich_public_candidate_metadata(
+        candidate=MockSearchProvider().search(request)[0],
+        result=PublicSearchResult(
+            title="Ana Silva - Python Trainer | LinkedIn",
+            url="https://www.linkedin.com/in/ana-silva",
+            snippet="Python trainer.",
+            matched_query="site:linkedin.com/in Python trainer",
+            source_domain="linkedin.com",
+        ),
+        search_rank=5,
+        request=request,
+    )
+    second = enrich_public_candidate_metadata(
+        candidate=MockSearchProvider().search(request)[0],
+        result=PublicSearchResult(
+            title="Ana Silva - Python Speaker | LinkedIn",
+            url="https://www.linkedin.com/in/ana-silva?trk=public_profile",
+            snippet="Python speaker and workshop mentor.",
+            matched_query="site:linkedin.com/in Python speaker",
+            source_domain="linkedin.com",
+        ),
+        search_rank=2,
+        request=request,
+    )
+
+    merged = merge_candidate_evidence(first, second)
+
+    assert merged.search_rank == 2
+    assert merged.search_ranks == [2, 5]
+    assert merged.evidence_query_count == 2
+    assert merged.matched_queries == [
+        "site:linkedin.com/in Python trainer",
+        "site:linkedin.com/in Python speaker",
+    ]
+    assert merged.result_title_raw == "Ana Silva - Python Speaker | LinkedIn"
+    assert "speaker" in merged.training_signals
