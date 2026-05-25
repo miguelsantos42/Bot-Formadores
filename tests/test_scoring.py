@@ -11,6 +11,10 @@ from bot.scoring import (
     calculate_public_credibility,
     calculate_thematic_fit,
     calculate_training_experience,
+    canonical_best_search_rank,
+    canonical_matched_queries,
+    canonical_profile_slug,
+    canonical_queries_found_count,
     linkedin_profile_quality_score,
     linkedin_slug_confidence_score,
     calculate_location_score,
@@ -459,9 +463,12 @@ def test_multi_query_evidence_increases_score() -> None:
         profile_type=ProfileType.linkedin_profile,
         is_probably_linkedin_profile=True,
         linkedin_profile_slug="ana-silva",
+        profile_slug="ana-silva",
         linkedin_profile_url="https://www.linkedin.com/in/ana-silva",
         search_rank=4,
+        best_search_rank=4,
         evidence_query_count=1,
+        queries_found_count=1,
         matched_queries=["site:linkedin.com/in Python trainer"],
         training_signals=["trainer"],
         topic_signals=["python"],
@@ -470,9 +477,12 @@ def test_multi_query_evidence_increases_score() -> None:
         update={
             "nome": "Joao Pereira",
             "linkedin_profile_slug": "joao-pereira",
+            "profile_slug": "joao-pereira",
             "linkedin_profile_url": "https://www.linkedin.com/in/joao-pereira",
             "evidence_query_count": 4,
+            "queries_found_count": 4,
             "search_rank": 1,
+            "best_search_rank": 1,
             "matched_queries": [
                 "site:linkedin.com/in Python trainer",
                 "site:linkedin.com/in Python speaker",
@@ -504,11 +514,14 @@ def test_trainer_and_topic_signals_drive_linkedin_first_components() -> None:
         profile_type=ProfileType.linkedin_profile,
         is_probably_linkedin_profile=True,
         linkedin_profile_slug="ana-silva",
+        profile_slug="ana-silva",
         linkedin_profile_url="https://www.linkedin.com/in/ana-silva",
         training_signals=["trainer", "speaker", "workshop", "mentor"],
         topic_signals=["python"],
         evidence_query_count=3,
+        queries_found_count=3,
         search_rank=2,
+        best_search_rank=2,
     )
 
     score = score_candidate(request, candidate).score
@@ -534,9 +547,12 @@ def test_generic_linkedin_profile_descends_against_aligned_trainer() -> None:
         profile_type=ProfileType.linkedin_profile,
         is_probably_linkedin_profile=True,
         linkedin_profile_slug="carlos-lima",
+        profile_slug="carlos-lima",
         linkedin_profile_url="https://www.linkedin.com/in/carlos-lima",
         evidence_query_count=1,
+        queries_found_count=1,
         search_rank=2,
+        best_search_rank=2,
     )
     aligned_trainer = Candidate(
         nome="Ana Silva",
@@ -548,13 +564,139 @@ def test_generic_linkedin_profile_descends_against_aligned_trainer() -> None:
         profile_type=ProfileType.linkedin_profile,
         is_probably_linkedin_profile=True,
         linkedin_profile_slug="ana-silva",
+        profile_slug="ana-silva",
         linkedin_profile_url="https://www.linkedin.com/in/ana-silva",
         training_signals=["trainer", "speaker", "mentor", "workshop"],
         topic_signals=["python"],
         evidence_query_count=2,
+        queries_found_count=2,
         search_rank=3,
+        best_search_rank=3,
     )
 
     scored = score_candidates(request, [generic_profile, aligned_trainer])
 
     assert scored[0].candidato.nome == "Ana Silva"
+
+
+def test_canonical_scoring_fields_prefer_new_candidate_fields() -> None:
+    candidate = Candidate(
+        nome="Ana Silva",
+        fonte="public_web",
+        matched_query="site:linkedin.com/in Python trainer",
+        matched_queries=[
+            "site:linkedin.com/in Python trainer",
+            "site:linkedin.com/in Python trainer",
+            "site:linkedin.com/in Python speaker",
+        ],
+        linkedin_profile_slug="legacy-slug",
+        profile_slug="ana-silva",
+        evidence_query_count=1,
+        queries_found_count=2,
+        search_rank=5,
+        best_search_rank=1,
+    )
+
+    assert canonical_profile_slug(candidate) == "ana-silva"
+    assert canonical_matched_queries(candidate) == [
+        "site:linkedin.com/in Python trainer",
+        "site:linkedin.com/in Python speaker",
+    ]
+    assert canonical_queries_found_count(candidate) == 2
+    assert canonical_best_search_rank(candidate) == 1
+
+
+def test_queries_found_count_is_the_primary_multi_query_signal() -> None:
+    weak_evidence = Candidate(
+        nome="Ana Silva",
+        fonte="public_web",
+        links=[PublicLink(label="LinkedIn", url="https://www.linkedin.com/in/ana-silva")],
+        profile_type=ProfileType.linkedin_profile,
+        is_probably_linkedin_profile=True,
+        profile_slug="ana-silva",
+        linkedin_profile_url="https://www.linkedin.com/in/ana-silva",
+        matched_queries=["site:linkedin.com/in Python trainer"],
+        queries_found_count=1,
+        best_search_rank=4,
+    )
+    strong_evidence = weak_evidence.model_copy(
+        update={
+            "nome": "Joao Pereira",
+            "profile_slug": "joao-pereira",
+            "matched_queries": [
+                "site:linkedin.com/in Python trainer",
+                "site:linkedin.com/in Python speaker",
+                "site:linkedin.com/in Python mentor",
+            ],
+            "queries_found_count": 3,
+            "best_search_rank": 4,
+        }
+    )
+
+    assert multi_query_evidence_score(strong_evidence) > multi_query_evidence_score(
+        weak_evidence
+    )
+
+
+def test_best_search_rank_is_the_primary_rank_signal() -> None:
+    lower_rank = Candidate(
+        nome="Ana Silva",
+        fonte="public_web",
+        links=[PublicLink(label="LinkedIn", url="https://www.linkedin.com/in/ana-silva")],
+        profile_type=ProfileType.linkedin_profile,
+        is_probably_linkedin_profile=True,
+        profile_slug="ana-silva",
+        linkedin_profile_url="https://www.linkedin.com/in/ana-silva",
+        matched_queries=["site:linkedin.com/in Python trainer"],
+        queries_found_count=2,
+        search_rank=1,
+        best_search_rank=8,
+    )
+    better_rank = lower_rank.model_copy(update={"best_search_rank": 1})
+
+    assert multi_query_evidence_score(better_rank) > multi_query_evidence_score(lower_rank)
+    assert linkedin_profile_quality_score(better_rank) > linkedin_profile_quality_score(
+        lower_rank
+    )
+
+
+def test_training_signals_raise_profile_without_freelance_or_email() -> None:
+    request = make_request()
+    strong_without_email = Candidate(
+        nome="Ana Silva",
+        cargo="Python instructor and mentor",
+        links=[PublicLink(label="LinkedIn", url="https://www.linkedin.com/in/ana-silva")],
+        email_publico=None,
+        fonte="public_web",
+        result_title_raw="Ana Silva - Python Instructor and Coach | LinkedIn",
+        snippet_raw="Speaker, mentor and workshop facilitator for Python teams.",
+        profile_type=ProfileType.linkedin_profile,
+        is_probably_linkedin_profile=True,
+        profile_slug="ana-silva",
+        linkedin_profile_url="https://www.linkedin.com/in/ana-silva",
+        matched_queries=[
+            "site:linkedin.com/in Python instructor",
+            "site:linkedin.com/in Python mentor",
+            "site:linkedin.com/in Python workshop",
+        ],
+        queries_found_count=3,
+        best_search_rank=2,
+        training_signals=["instructor", "mentor", "workshop", "speaker"],
+        topic_signals=["python"],
+    )
+    generic_with_email = Candidate(
+        nome="Carlos Lima",
+        cargo="Technology manager",
+        email_publico="carlos@example.com",
+        fonte="public_web",
+        result_title_raw="Carlos Lima - Technology Manager",
+        snippet_raw="Generic technology profile.",
+        profile_type=ProfileType.unknown,
+    )
+
+    scored = score_candidates(request, [generic_with_email, strong_without_email])
+
+    assert "freelance" not in strong_without_email.snippet_raw.lower()
+    assert trainer_signal_score(strong_without_email) >= 92
+    assert scored[0].candidato.nome == "Ana Silva"
+    assert scored[0].canal_recomendado == ContactChannel.linkedin

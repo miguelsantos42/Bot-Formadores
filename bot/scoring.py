@@ -12,11 +12,14 @@ PRIMARY_TRAINING_SIGNALS = [
     "formador",
     "formadora",
     "trainer",
+    "instructor",
     "speaker",
     "mentor",
     "workshop",
+    "workshops",
     "facilitator",
     "coach",
+    "coaching",
 ]
 
 SECONDARY_TRAINING_SIGNALS = [
@@ -150,7 +153,9 @@ def semantic_topic_match_score(
     candidate: Candidate,
 ) -> int:
     evidence_text = candidate_evidence_text(candidate)
-    query_text = normalize_text(" ".join([*candidate.matched_queries, candidate.matched_query or ""]))
+    query_text = normalize_text(
+        " ".join([*canonical_matched_queries(candidate), candidate.matched_query or ""])
+    )
     topic = normalize_text(request.tema_formacao)
     topic_terms = [term for term in topic.split() if len(term) >= 2]
 
@@ -245,6 +250,11 @@ def calculate_functional_fit(
 
     if area in text:
         return 80
+
+    area_terms = [term for term in area.split() if len(term) >= 3]
+    query_text = normalize_text(" ".join(canonical_matched_queries(candidate)))
+    if area_terms and any(term in query_text for term in area_terms):
+        return 76 if training_signal >= 70 else 66
 
     if training_signal >= 85:
         return 75
@@ -375,7 +385,10 @@ def calculate_public_credibility(candidate: Candidate) -> int:
     if trainer_signal_score(candidate) >= 80:
         score += 7
 
-    score += round((multi_query_evidence_score(candidate) - 50) * 0.15)
+    if canonical_profile_slug(candidate):
+        score += 4
+
+    score += round((multi_query_evidence_score(candidate) - 50) * 0.20)
 
     return clamp_score(score)
 
@@ -383,6 +396,7 @@ def calculate_public_credibility(candidate: Candidate) -> int:
 def linkedin_profile_quality_score(candidate: Candidate) -> int:
     if has_linkedin_profile(candidate):
         score = 78
+        best_rank = canonical_best_search_rank(candidate)
 
         if candidate.is_probably_linkedin_profile:
             score += 7
@@ -390,15 +404,15 @@ def linkedin_profile_quality_score(candidate: Candidate) -> int:
         if candidate.profile_type == ProfileType.linkedin_profile:
             score += 6
 
-        if candidate.linkedin_profile_slug:
+        if canonical_profile_slug(candidate):
             score += 6
 
         if candidate.evidence_titles or candidate.evidence_snippets:
             score += 4
 
-        if candidate.search_rank == 1:
+        if best_rank == 1:
             score += 4
-        elif candidate.search_rank is not None and candidate.search_rank <= 3:
+        elif best_rank is not None and best_rank <= 3:
             score += 2
 
         return clamp_score(score)
@@ -422,35 +436,45 @@ def linkedin_profile_quality_score(candidate: Candidate) -> int:
 
 
 def multi_query_evidence_score(candidate: Candidate) -> int:
-    query_count = candidate.evidence_query_count or len(candidate.matched_queries)
-    best_rank = candidate.search_rank
+    query_count = canonical_queries_found_count(candidate)
+    best_rank = canonical_best_search_rank(candidate)
+    matched_query_count = len(canonical_matched_queries(candidate))
 
     if query_count >= 6:
-        score = 96
+        score = 98
     elif query_count >= 4:
-        score = 90
+        score = 92
     elif query_count >= 3:
-        score = 82
+        score = 86
     elif query_count == 2:
-        score = 72
+        score = 76
     elif query_count == 1:
-        score = 56
+        score = 58
     else:
         score = 42
 
     if best_rank == 1:
-        score += 4
+        score += 6
     elif best_rank is not None and best_rank <= 3:
+        score += 4
+    elif best_rank is not None and best_rank <= 10:
+        score += 1
+
+    if matched_query_count >= 3:
+        score += 3
+    elif matched_query_count == 2:
         score += 2
 
     return clamp_score(score)
 
 
 def linkedin_slug_confidence_score(candidate: Candidate) -> int:
-    if candidate.linkedin_profile_slug and candidate.linkedin_profile_url:
+    profile_slug = canonical_profile_slug(candidate)
+
+    if profile_slug and candidate.linkedin_profile_url:
         return 96
 
-    if candidate.linkedin_profile_slug:
+    if profile_slug:
         return 90
 
     if has_linkedin_profile(candidate):
@@ -569,7 +593,7 @@ def candidate_public_text(candidate: Candidate) -> str:
                 candidate.result_title_raw or "",
                 candidate.snippet_raw or "",
                 candidate.matched_query or "",
-                " ".join(candidate.matched_queries),
+                " ".join(canonical_matched_queries(candidate)),
                 " ".join(candidate.evidence_titles),
                 " ".join(candidate.evidence_snippets),
                 " ".join(candidate.training_signals),
@@ -600,6 +624,46 @@ def candidate_evidence_text(candidate: Candidate) -> str:
             ]
         )
     )
+
+
+def canonical_profile_slug(candidate: Candidate) -> str | None:
+    return candidate.profile_slug or candidate.linkedin_profile_slug
+
+
+def canonical_matched_queries(candidate: Candidate) -> list[str]:
+    queries: list[str] = []
+    for query in candidate.matched_queries:
+        clean_query = query.strip()
+        if clean_query and clean_query not in queries:
+            queries.append(clean_query)
+
+    if candidate.matched_query:
+        clean_query = candidate.matched_query.strip()
+        if clean_query and clean_query not in queries:
+            queries.append(clean_query)
+
+    return queries
+
+
+def canonical_queries_found_count(candidate: Candidate) -> int:
+    return (
+        candidate.queries_found_count
+        or candidate.evidence_query_count
+        or len(canonical_matched_queries(candidate))
+    )
+
+
+def canonical_best_search_rank(candidate: Candidate) -> int | None:
+    if candidate.best_search_rank is not None:
+        return candidate.best_search_rank
+
+    if candidate.search_rank is not None:
+        return candidate.search_rank
+
+    if candidate.search_ranks:
+        return min(candidate.search_ranks)
+
+    return None
 
 
 def count_matches(text: str, terms: list[str]) -> int:
