@@ -18,6 +18,7 @@ from app import (
     format_optional,
     get_candidate_curation,
     get_provider_label,
+    is_public_search_provider,
     should_use_mock_fallback,
     slugify,
     sort_results,
@@ -161,9 +162,27 @@ def test_should_use_mock_fallback_requires_public_provider_and_empty_results() -
         public_search_timeout_seconds=1,
         public_search_max_results=5,
     )
+    brave_settings = Settings(
+        app_env="test",
+        database_path="test.sqlite3",
+        search_provider="brave_search",
+        public_search_url="https://example.com/search",
+        public_search_timeout_seconds=1,
+        public_search_max_results=5,
+        public_search_fallback_to_mock=True,
+        brave_search_api_key="test-key",
+    )
 
     assert should_use_mock_fallback(public_settings, [])
+    assert should_use_mock_fallback(brave_settings, [])
     assert not should_use_mock_fallback(mock_settings, [])
+
+
+def test_is_public_search_provider_includes_brave_and_html() -> None:
+    assert is_public_search_provider("brave_search")
+    assert is_public_search_provider("brave")
+    assert is_public_search_provider("public_web")
+    assert not is_public_search_provider("mock")
 
 
 def test_get_provider_label_formats_known_providers() -> None:
@@ -180,7 +199,19 @@ def test_get_provider_label_formats_known_providers() -> None:
         public_search_max_results=5,
     )
 
-    assert get_provider_label(public_settings) == "Pesquisa pública"
+    assert get_provider_label(public_settings) == "Pesquisa pública HTML"
+
+    brave_settings = Settings(
+        app_env="test",
+        database_path="test.sqlite3",
+        search_provider="brave_search",
+        public_search_url="https://example.com/search",
+        public_search_timeout_seconds=1,
+        public_search_max_results=5,
+        brave_search_api_key="test-key",
+    )
+
+    assert get_provider_label(brave_settings) == "Brave Search API"
 
 
 def test_format_optional_handles_missing_values() -> None:

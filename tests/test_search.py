@@ -5,9 +5,11 @@ from bot.models import ProfileType, TrainingFormat, TrainingRequest
 from bot.search import (
     MAX_CONSECUTIVE_PUBLIC_SEARCH_ERRORS,
     MAX_SEARCH_QUERIES,
+    BraveSearchProvider,
     MockSearchProvider,
     PublicWebSearchProvider,
     QUERY_BUCKET_QUOTAS,
+    SearchConfigurationError,
     build_topic_terms,
     detect_profile_type,
     dedupe_preserve_order,
@@ -24,6 +26,7 @@ from bot.search import (
     is_search_challenge_html,
     merge_candidate_evidence,
     normalize_linkedin_profile_url,
+    parse_brave_search_results,
 )
 from bot.parsing import PublicSearchResult
 
@@ -237,6 +240,167 @@ def test_get_search_provider_returns_public_web_provider() -> None:
     provider = get_search_provider(settings)
 
     assert isinstance(provider, PublicWebSearchProvider)
+
+
+def test_get_search_provider_returns_brave_search_provider() -> None:
+    settings = Settings(
+        app_env="test",
+        database_path="test.sqlite3",
+        search_provider="brave_search",
+        public_search_url="https://example.com/search",
+        public_search_timeout_seconds=1,
+        public_search_max_results=5,
+        brave_search_api_key="test-key",
+        brave_search_url="https://example.com/brave",
+    )
+
+    provider = get_search_provider(settings)
+
+    assert isinstance(provider, BraveSearchProvider)
+    assert provider.api_key == "test-key"
+    assert provider.search_url == "https://example.com/brave"
+
+
+def test_get_search_provider_requires_brave_api_key() -> None:
+    settings = Settings(
+        app_env="test",
+        database_path="test.sqlite3",
+        search_provider="brave_search",
+        public_search_url="https://example.com/search",
+        public_search_timeout_seconds=1,
+        public_search_max_results=5,
+        brave_search_api_key=None,
+    )
+
+    try:
+        get_search_provider(settings)
+    except SearchConfigurationError as error:
+        assert "BRAVE_SEARCH_API_KEY" in str(error)
+        assert "SEARCH_PROVIDER=brave_search" in str(error)
+    else:
+        raise AssertionError("Expected SearchConfigurationError")
+
+
+def test_parse_brave_search_results_returns_public_search_results() -> None:
+    payload = {
+        "web": {
+            "results": [
+                {
+                    "title": "Ana Silva - Python Trainer | LinkedIn",
+                    "url": "https://www.linkedin.com/in/ana-silva?trk=public_profile",
+                    "description": "Python trainer and speaker.",
+                    "extra_snippets": ["Workshop facilitator."],
+                },
+                {
+                    "title": "",
+                    "url": "https://example.com/ignored",
+                    "description": "Ignored because title is empty.",
+                },
+            ]
+        }
+    }
+
+    results = parse_brave_search_results(
+        payload,
+        matched_query="site:linkedin.com/in Python trainer",
+    )
+
+    assert len(results) == 1
+    assert results[0].title == "Ana Silva - Python Trainer | LinkedIn"
+    assert results[0].url == "https://www.linkedin.com/in/ana-silva?trk=public_profile"
+    assert results[0].source_domain == "linkedin.com"
+    assert results[0].matched_query == "site:linkedin.com/in Python trainer"
+    assert "Workshop facilitator." in results[0].snippet
+
+
+def test_brave_search_provider_returns_candidates(monkeypatch) -> None:
+    payload = {
+        "web": {
+            "results": [
+                {
+                    "title": "Ana Silva - Python Trainer | LinkedIn",
+                    "url": "https://www.linkedin.com/in/ana-silva?trk=public_profile",
+                    "description": "Python trainer and speaker.",
+                },
+                {
+                    "title": "Empresa X | LinkedIn",
+                    "url": "https://www.linkedin.com/company/empresa-x",
+                    "description": "Training company.",
+                },
+            ]
+        }
+    }
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return payload
+
+    def fake_get(*args, **kwargs):
+        captured["url"] = args[0]
+        captured["params"] = kwargs["params"]
+        captured["headers"] = kwargs["headers"]
+        captured["timeout"] = kwargs["timeout"]
+        return FakeResponse()
+
+    monkeypatch.setattr("bot.search.requests.get", fake_get)
+
+    provider = BraveSearchProvider(
+        api_key="test-key",
+        search_url="https://example.com/brave",
+        timeout_seconds=1,
+        max_results=1,
+    )
+
+    candidates = provider.search(make_request())
+
+    assert len(candidates) == 1
+    assert candidates[0].nome == "Ana Silva"
+    assert candidates[0].fonte == "brave_search"
+    assert candidates[0].source_domain == "linkedin.com"
+    assert candidates[0].matched_query
+    assert candidates[0].search_rank == 1
+    assert candidates[0].result_title_raw == "Ana Silva - Python Trainer | LinkedIn"
+    assert candidates[0].snippet_raw == "Python trainer and speaker."
+    assert candidates[0].profile_type == ProfileType.linkedin_profile
+    assert candidates[0].is_probably_linkedin_profile is True
+    assert candidates[0].linkedin_profile_url == "https://www.linkedin.com/in/ana-silva"
+    assert candidates[0].linkedin_profile_slug == "ana-silva"
+    assert captured["url"] == "https://example.com/brave"
+    assert captured["params"]["q"].startswith("site:linkedin.com/in")
+    assert captured["params"]["count"] == 1
+    assert captured["headers"]["X-Subscription-Token"] == "test-key"
+    assert captured["timeout"] == 1
+    assert provider.last_diagnostics["query_count"] >= 1
+    assert provider.last_diagnostics["raw_result_count"] >= 1
+    assert provider.last_diagnostics["eligible_result_count"] >= 1
+
+
+def test_brave_search_provider_raises_clear_error_for_invalid_key(monkeypatch) -> None:
+    class FakeResponse:
+        status_code = 401
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_get(*args, **kwargs):
+        return FakeResponse()
+
+    monkeypatch.setattr("bot.search.requests.get", fake_get)
+
+    provider = BraveSearchProvider(api_key="bad-key", timeout_seconds=1, max_results=1)
+
+    try:
+        provider.search(make_request())
+    except SearchConfigurationError as error:
+        assert "BRAVE_SEARCH_API_KEY" in str(error)
+    else:
+        raise AssertionError("Expected SearchConfigurationError")
 
 
 def test_public_web_search_provider_returns_candidates(monkeypatch) -> None:

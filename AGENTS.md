@@ -134,6 +134,6 @@ Engineering preference:
 - delay hard filtering
 - accumulate evidence across multiple queries
 - rerank later
-- keep logic explicit and debuggable
+- keep logic explicit and debuggable****
 
 </details>

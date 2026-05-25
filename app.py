@@ -20,7 +20,12 @@ from bot.models import (
     TrainingRequest,
 )
 from bot.scoring import score_candidates
-from bot.search import MockSearchProvider, generate_search_queries, get_search_provider
+from bot.search import (
+    MockSearchProvider,
+    SearchConfigurationError,
+    generate_search_queries,
+    get_search_provider,
+)
 
 
 FORMAT_LABELS = {
@@ -115,7 +120,7 @@ def build_search_run(request: TrainingRequest, settings: Settings | None = None)
     diagnostics = SearchDiagnostics(
         provider=settings.search_provider,
         public_candidate_count=(
-            len(candidates) if settings.search_provider == "public_web" else 0
+            len(candidates) if is_public_search_provider(settings.search_provider) else 0
         ),
         query_count=int(provider_diagnostics.get("query_count", 0) or 0),
         raw_result_count=int(provider_diagnostics.get("raw_result_count", 0) or 0),
@@ -161,18 +166,25 @@ def build_search_run(request: TrainingRequest, settings: Settings | None = None)
 
 def should_use_mock_fallback(settings: Settings, candidates: list[Candidate]) -> bool:
     return (
-        settings.search_provider == "public_web"
+        is_public_search_provider(settings.search_provider)
         and settings.public_search_fallback_to_mock
         and not candidates
     )
+
+
+def is_public_search_provider(provider_name: str) -> bool:
+    return provider_name in {"public_web", "brave", "brave_search"}
 
 
 def get_provider_label(settings: Settings) -> str:
     if settings.search_provider == "mock":
         return "Mock"
 
+    if settings.search_provider in {"brave", "brave_search"}:
+        return "Brave Search API"
+
     if settings.search_provider == "public_web":
-        return "Pesquisa pública"
+        return "Pesquisa pública HTML"
 
     return settings.search_provider
 
@@ -416,7 +428,7 @@ def render_sidebar(settings: Settings) -> bool:
         st.header("Estado")
         st.write(f"Provider ativo: **{get_provider_label(settings)}**")
         st.write(f"Base de dados: `{settings.database_path}`")
-        if settings.search_provider == "public_web":
+        if is_public_search_provider(settings.search_provider):
             st.write("Critério: **LinkedIn pessoal + recall/rerank**")
             fallback_label = (
                 "ativo" if settings.public_search_fallback_to_mock else "inativo"
@@ -836,6 +848,11 @@ def main() -> None:
         with st.spinner("A procurar candidatos públicos..."):
             try:
                 search_run = build_search_run(request, settings=settings)
+            except SearchConfigurationError as error:
+                st.error(str(error))
+                if show_debug:
+                    st.exception(error)
+                return
             except Exception as error:
                 st.error(
                     "O provider de pesquisa falhou. Tenta novamente ou muda o provider."

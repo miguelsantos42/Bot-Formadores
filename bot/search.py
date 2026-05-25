@@ -8,6 +8,8 @@ from bot.config import Settings
 from bot.models import Candidate, ProfileType, PublicLink, TrainingRequest
 from bot.parsing import (
     PublicSearchResult,
+    clean_text,
+    extract_source_domain,
     parse_public_result_to_candidate,
     parse_search_results_html,
 )
@@ -161,6 +163,10 @@ class SearchProvider(ABC):
     @abstractmethod
     def search(self, request: TrainingRequest) -> list[Candidate]:
         """Return candidates for a training request."""
+
+
+class SearchConfigurationError(ValueError):
+    """Raised when the selected search provider is not configured correctly."""
 
 
 def generate_search_queries(request: TrainingRequest) -> list[str]:
@@ -416,6 +422,20 @@ def get_search_provider(settings: Settings) -> SearchProvider:
     if settings.search_provider == "mock":
         return MockSearchProvider()
 
+    if settings.search_provider in {"brave", "brave_search"}:
+        if not settings.brave_search_api_key:
+            raise SearchConfigurationError(
+                "BRAVE_SEARCH_API_KEY is required when SEARCH_PROVIDER=brave_search. "
+                "Set it in .env or use SEARCH_PROVIDER=mock/public_web for local development."
+            )
+
+        return BraveSearchProvider(
+            api_key=settings.brave_search_api_key,
+            search_url=settings.brave_search_url,
+            timeout_seconds=settings.public_search_timeout_seconds,
+            max_results=settings.public_search_max_results,
+        )
+
     if settings.search_provider == "public_web":
         return PublicWebSearchProvider(
             search_url=settings.public_search_url,
@@ -515,6 +535,121 @@ class MockSearchProvider(SearchProvider):
             )
             for index, candidate in enumerate(candidates)
         ]
+
+
+class BraveSearchProvider(SearchProvider):
+    def __init__(
+        self,
+        api_key: str,
+        search_url: str = "https://api.search.brave.com/res/v1/web/search",
+        timeout_seconds: int = 10,
+        max_results: int = 10,
+    ) -> None:
+        self.api_key = api_key
+        self.search_url = search_url
+        self.timeout_seconds = timeout_seconds
+        self.max_results = max_results
+        self.last_diagnostics: dict[str, int | str | None] = {}
+
+    def search(self, request: TrainingRequest) -> list[Candidate]:
+        self.reset_diagnostics()
+        candidates_by_key: dict[str, Candidate] = {}
+        candidate_order: list[str] = []
+        consecutive_errors = 0
+
+        for query in generate_search_queries(request):
+            try:
+                fetched_results = self._fetch_results(query)
+            except requests.RequestException:
+                consecutive_errors += 1
+                if consecutive_errors >= MAX_CONSECUTIVE_PUBLIC_SEARCH_ERRORS:
+                    break
+                continue
+
+            consecutive_errors = 0
+
+            for search_rank, result in enumerate(fetched_results, start=1):
+                if not is_relevant_public_result(result, request):
+                    continue
+
+                self.increment_diagnostic("eligible_result_count")
+                profile_key = build_linkedin_profile_key(result.url)
+                if profile_key is None:
+                    continue
+
+                candidate = enrich_public_candidate_metadata(
+                    candidate=parse_public_result_to_candidate(
+                        result,
+                        fonte="brave_search",
+                    ),
+                    result=result,
+                    search_rank=search_rank,
+                    request=request,
+                )
+                if profile_key in candidates_by_key:
+                    candidates_by_key[profile_key] = merge_candidate_evidence(
+                        candidates_by_key[profile_key],
+                        candidate,
+                    )
+                else:
+                    candidates_by_key[profile_key] = candidate
+                    candidate_order.append(profile_key)
+
+        return [
+            candidates_by_key[key]
+            for key in candidate_order[: self.max_results]
+        ]
+
+    def reset_diagnostics(self) -> None:
+        self.last_diagnostics = {
+            "query_count": 0,
+            "raw_result_count": 0,
+            "eligible_result_count": 0,
+            "blocked_query_count": 0,
+            "block_reason": None,
+        }
+
+    def ensure_diagnostics(self) -> None:
+        if not self.last_diagnostics:
+            self.reset_diagnostics()
+
+    def increment_diagnostic(self, key: str, amount: int = 1) -> None:
+        self.ensure_diagnostics()
+        current_value = self.last_diagnostics.get(key)
+        if isinstance(current_value, int):
+            self.last_diagnostics[key] = current_value + amount
+
+    def _fetch_results(self, query: str) -> list[PublicSearchResult]:
+        self.increment_diagnostic("query_count")
+        response = requests.get(
+            self.search_url,
+            params={
+                "q": query,
+                "count": min(max(self.max_results, 1), 20),
+                "country": "PT",
+                "search_lang": "pt",
+                "ui_lang": "pt-PT",
+                "safesearch": "strict",
+                "extra_snippets": "true",
+            },
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "gzip",
+                "X-Subscription-Token": self.api_key,
+            },
+            timeout=self.timeout_seconds,
+        )
+
+        status_code = getattr(response, "status_code", None)
+        if status_code in {401, 403}:
+            raise SearchConfigurationError(
+                "Brave Search API rejected the request. Check BRAVE_SEARCH_API_KEY."
+            )
+
+        response.raise_for_status()
+        results = parse_brave_search_results(response.json(), matched_query=query)
+        self.increment_diagnostic("raw_result_count", len(results))
+        return results
 
 
 class PublicWebSearchProvider(SearchProvider):
@@ -629,6 +764,45 @@ class PublicWebSearchProvider(SearchProvider):
         results = parse_search_results_html(response.text, matched_query=query)
         self.increment_diagnostic("raw_result_count", len(results))
         return results
+
+
+def parse_brave_search_results(
+    payload: dict,
+    matched_query: str,
+) -> list[PublicSearchResult]:
+    raw_results = payload.get("web", {}).get("results", [])
+    if not isinstance(raw_results, list):
+        return []
+
+    results: list[PublicSearchResult] = []
+    for raw_result in raw_results:
+        if not isinstance(raw_result, dict):
+            continue
+
+        title = clean_text(str(raw_result.get("title") or ""))
+        url = str(raw_result.get("url") or "").strip()
+        snippet_parts = [str(raw_result.get("description") or "")]
+        extra_snippets = raw_result.get("extra_snippets", [])
+        if isinstance(extra_snippets, list):
+            snippet_parts.extend(str(snippet) for snippet in extra_snippets)
+
+        snippet = clean_text(" ".join(snippet_parts))
+        domain = extract_source_domain(url)
+
+        if not title or not url or not domain:
+            continue
+
+        results.append(
+            PublicSearchResult(
+                title=title,
+                url=url,
+                snippet=snippet,
+                matched_query=matched_query,
+                source_domain=domain,
+            )
+        )
+
+    return results
 
 
 def is_search_challenge_html(

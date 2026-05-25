@@ -52,7 +52,10 @@ def parse_search_results_html(html: str, matched_query: str) -> list[PublicSearc
     return results
 
 
-def parse_public_result_to_candidate(result: PublicSearchResult) -> Candidate:
+def parse_public_result_to_candidate(
+    result: PublicSearchResult,
+    fonte: str = "public_web",
+) -> Candidate:
     is_linkedin = "linkedin.com" in result.source_domain
     name = infer_candidate_name(result.title)
 
@@ -68,7 +71,7 @@ def parse_public_result_to_candidate(result: PublicSearchResult) -> Candidate:
             )
         ],
         email_publico=None,
-        fonte="public_web",
+        fonte=fonte,
         excerto=result.snippet or result.title,
         matched_query=result.matched_query,
         source_domain=result.source_domain,

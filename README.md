@@ -39,7 +39,7 @@ streamlit run app.py --server.port 8502
 Só o campo `Tema da formação` é obrigatório. Os restantes campos servem apenas
 para afinar a pesquisa quando fizer sentido.
 
-Por defeito, a app tenta usar pesquisa pública via Bing com estratégia
+Por defeito, a app tenta usar a Brave Search API com estratégia
 LinkedIn-only recall-then-rerank:
 
 - só perfis pessoais de LinkedIn (`linkedin.com/in`);
@@ -52,16 +52,27 @@ LinkedIn-only recall-then-rerank:
   evidência multi-query, slug LinkedIn e localização.
 
 ```env
-SEARCH_PROVIDER=public_web
+SEARCH_PROVIDER=brave_search
+BRAVE_SEARCH_API_KEY=coloca_a_tua_key_aqui
+BRAVE_SEARCH_URL=https://api.search.brave.com/res/v1/web/search
 PUBLIC_SEARCH_URL=https://www.bing.com/search
 PUBLIC_SEARCH_TIMEOUT_SECONDS=5
 PUBLIC_SEARCH_MAX_RESULTS=25
 PUBLIC_SEARCH_FALLBACK_TO_MOCK=false
 ```
 
+Se `SEARCH_PROVIDER=brave_search` estiver ativo sem `BRAVE_SEARCH_API_KEY`, a
+app mostra um erro de configuração explícito.
+
 Com `PUBLIC_SEARCH_FALLBACK_TO_MOCK=false`, a app não inventa candidatos: se a
 pesquisa pública não encontrar perfis pessoais públicos do LinkedIn que passem
 o filtro mínimo, mostra zero candidatos.
+
+O provider antigo de HTML SERP continua disponível apenas para desenvolvimento:
+
+```env
+SEARCH_PROVIDER=public_web
+```
 
 Para testar só com dados fictícios:
 
