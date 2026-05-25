@@ -5,6 +5,12 @@ from pathlib import Path
 from uuid import uuid4
 
 from bot.models import Candidate, CandidateResult, SearchRun
+from bot.scoring import (
+    canonical_best_search_rank,
+    canonical_matched_queries,
+    canonical_profile_slug,
+    canonical_queries_found_count,
+)
 
 
 def init_db(database_path: Path) -> None:
@@ -284,12 +290,19 @@ def build_candidate_observability_row(
 
 
 def build_raw_result_payload(candidate: Candidate) -> dict:
+    matched_queries = canonical_matched_queries(candidate)
+    profile_slug = canonical_profile_slug(candidate)
+    queries_found_count = canonical_queries_found_count(candidate)
+    best_search_rank = canonical_best_search_rank(candidate)
+
     return {
+        "profile_slug": profile_slug,
         "matched_query": candidate.matched_query,
-        "matched_queries": candidate.matched_queries,
+        "matched_queries": matched_queries,
+        "queries_found_count": queries_found_count,
+        "best_search_rank": best_search_rank,
         "search_rank": candidate.search_rank,
         "search_ranks": candidate.search_ranks,
-        "best_search_rank": candidate.search_rank,
         "evidence_query_count": candidate.evidence_query_count,
         "source_domain": candidate.source_domain,
         "linkedin_profile_url": candidate.linkedin_profile_url,
@@ -301,6 +314,21 @@ def build_raw_result_payload(candidate: Candidate) -> dict:
         "training_signals": candidate.training_signals,
         "topic_signals": candidate.topic_signals,
         "functional_signals": candidate.functional_signals,
+        "ranking_signals": {
+            "canonical_fields": {
+                "profile_slug": profile_slug,
+                "matched_queries": matched_queries,
+                "queries_found_count": queries_found_count,
+                "best_search_rank": best_search_rank,
+            },
+            "profile_type": candidate.profile_type.value,
+            "is_probably_linkedin_profile": candidate.is_probably_linkedin_profile,
+            "training_signals": candidate.training_signals,
+            "topic_signals": candidate.topic_signals,
+            "functional_signals": candidate.functional_signals,
+            "has_result_title": bool(candidate.result_title_raw),
+            "has_snippet": bool(candidate.snippet_raw),
+        },
         "excerto": candidate.excerto,
         "links": [
             {

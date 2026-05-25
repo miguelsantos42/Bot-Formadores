@@ -125,10 +125,36 @@ def test_list_search_run_candidates_returns_debug_payload(tmp_path: Path) -> Non
     assert first_candidate["candidate"]["nome"] == first_candidate["candidate_name"]
     assert first_candidate["raw_result"]["matched_query"] == first_candidate["matched_query"]
     assert first_candidate["raw_result"]["matched_queries"]
+    assert (
+        first_candidate["raw_result"]["matched_queries"]
+        == first_candidate["candidate"]["matched_queries"]
+    )
+    assert len(first_candidate["raw_result"]["matched_queries"]) == len(
+        set(first_candidate["raw_result"]["matched_queries"])
+    )
+    assert first_candidate["raw_result"]["profile_slug"]
+    assert (
+        first_candidate["raw_result"]["profile_slug"]
+        == first_candidate["candidate"]["profile_slug"]
+    )
+    assert first_candidate["raw_result"]["queries_found_count"] >= 1
+    assert (
+        first_candidate["raw_result"]["queries_found_count"]
+        == first_candidate["candidate"]["queries_found_count"]
+    )
+    assert first_candidate["raw_result"]["best_search_rank"] == first_candidate[
+        "candidate"
+    ]["best_search_rank"]
     assert first_candidate["raw_result"]["search_ranks"]
     assert first_candidate["raw_result"]["evidence_query_count"] >= 1
     assert first_candidate["raw_result"]["linkedin_profile_slug"]
     assert first_candidate["raw_result"]["training_signals"]
+    assert first_candidate["raw_result"]["ranking_signals"]["canonical_fields"] == {
+        "profile_slug": first_candidate["raw_result"]["profile_slug"],
+        "matched_queries": first_candidate["raw_result"]["matched_queries"],
+        "queries_found_count": first_candidate["raw_result"]["queries_found_count"],
+        "best_search_rank": first_candidate["raw_result"]["best_search_rank"],
+    }
     assert first_candidate["created_at"]
 
 
@@ -156,6 +182,52 @@ def test_search_candidate_debug_keeps_all_score_components(tmp_path: Path) -> No
         "score_total",
         "motivo",
     }
+    assert first_candidate["score"]["score_total"] == first_candidate["score_total"]
+
+
+def test_candidate_debug_payload_persists_ranking_signals(tmp_path: Path) -> None:
+    database_path = tmp_path / "test.sqlite3"
+    search_run = make_search_run()
+
+    first_candidate_model = search_run.resultados[0].candidato_classificado.candidato
+    first_candidate_model.matched_queries.append(first_candidate_model.matched_queries[0])
+
+    run_id = save_search_run(database_path, search_run)
+
+    first_candidate = list_search_run_candidates(database_path, run_id)[0]
+    raw_result = first_candidate["raw_result"]
+    ranking_signals = raw_result["ranking_signals"]
+
+    assert raw_result["profile_slug"] == first_candidate_model.profile_slug
+    assert raw_result["queries_found_count"] == first_candidate_model.queries_found_count
+    assert raw_result["best_search_rank"] == first_candidate_model.best_search_rank
+    assert raw_result["matched_queries"] == list(dict.fromkeys(first_candidate_model.matched_queries))
+    assert ranking_signals["profile_type"] == first_candidate_model.profile_type.value
+    assert ranking_signals["is_probably_linkedin_profile"] is True
+    assert ranking_signals["training_signals"]
+    assert ranking_signals["topic_signals"]
+    assert "canonical_fields" in ranking_signals
+
+
+def test_search_run_payload_roundtrip_includes_canonical_candidate_fields(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "test.sqlite3"
+    search_run = make_search_run()
+
+    run_id = save_search_run(database_path, search_run)
+
+    saved_run = get_search_run(database_path, run_id)
+    assert saved_run is not None
+
+    first_candidate = saved_run["payload"]["resultados"][0]["candidato_classificado"][
+        "candidato"
+    ]
+
+    assert first_candidate["profile_slug"]
+    assert first_candidate["matched_queries"]
+    assert first_candidate["queries_found_count"] >= 1
+    assert first_candidate["best_search_rank"] >= 1
 
 
 def test_candidate_debug_payload_links_to_matching_query(tmp_path: Path) -> None:
