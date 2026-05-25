@@ -5,10 +5,16 @@ from io import StringIO
 from app import (
     CURATION_STATUS_DEFAULT,
     EXPORT_COLUMNS,
+    build_benchmark_rows,
+    build_candidate_evidence_summary,
+    build_detailed_score_components,
+    build_effective_settings,
     build_export_filename,
     build_export_rows,
     build_score_components,
+    build_search_debug_metrics,
     build_search_run,
+    build_top_query_contributions,
     candidate_key,
     count_approved_results,
     export_rows_to_csv,
@@ -239,6 +245,115 @@ def test_build_score_components_returns_readable_component_names() -> None:
         "Credibilidade pública",
     }
     assert all(isinstance(value, int) for value in components.values())
+
+
+def test_build_detailed_score_components_includes_reranking_components() -> None:
+    search_run = make_search_run()
+
+    components = build_detailed_score_components(search_run.resultados[0])
+
+    assert set(components) >= {
+        "Fit temático",
+        "Qualidade perfil LinkedIn",
+        "Match semântico",
+        "Sinais de formação",
+        "Evidência multi-query",
+        "Confiança slug LinkedIn",
+        "Localização melhorada",
+        "Score total",
+    }
+    assert components["Score total"] == search_run.resultados[
+        0
+    ].candidato_classificado.score.score_total
+
+
+def test_build_candidate_evidence_summary_exposes_canonical_fields() -> None:
+    search_run = make_search_run()
+    result = search_run.resultados[0]
+    candidate = result.candidato_classificado.candidato
+    candidate.matched_queries.append(candidate.matched_queries[0])
+
+    summary = build_candidate_evidence_summary(result)
+
+    assert summary["profile_slug"] == candidate.profile_slug
+    assert summary["queries_found_count"] == candidate.queries_found_count
+    assert summary["best_search_rank"] == candidate.best_search_rank
+    assert summary["matched_queries"] == list(dict.fromkeys(candidate.matched_queries))
+    assert summary["training_signals"]
+    assert summary["topic_signals"]
+    assert summary["result_title_raw"] == candidate.result_title_raw
+    assert summary["snippet_raw"] == candidate.snippet_raw
+
+
+def test_build_search_debug_metrics_summarizes_real_run_observability() -> None:
+    search_run = make_search_run()
+    first_candidate = search_run.resultados[0].candidato_classificado.candidato
+    first_candidate.queries_found_count = 2
+    first_candidate.matched_queries.append(search_run.queries[1])
+
+    metrics = build_search_debug_metrics(search_run)
+
+    assert metrics["provider"] == "mock"
+    assert metrics["generated_query_count"] == len(search_run.queries)
+    assert metrics["final_candidate_count"] == len(search_run.resultados)
+    assert metrics["merged_profile_count"] == 1
+    assert metrics["top_query_contributions"]
+    assert metrics["top_query_contributions"][0]["candidate_count"] >= 1
+
+
+def test_build_top_query_contributions_orders_by_candidate_count() -> None:
+    search_run = make_search_run()
+    first_query = search_run.queries[0]
+    second_query = search_run.queries[1]
+
+    for result in search_run.resultados[:2]:
+        candidate = result.candidato_classificado.candidato
+        candidate.matched_queries = [first_query, second_query]
+        candidate.queries_found_count = 2
+
+    contributions = build_top_query_contributions(search_run)
+
+    assert contributions[0] == {
+        "query": first_query,
+        "candidate_count": 2,
+    }
+    assert contributions[1] == {
+        "query": second_query,
+        "candidate_count": 2,
+    }
+
+
+def test_build_benchmark_rows_returns_top_candidates_with_evidence() -> None:
+    search_run = make_search_run()
+
+    rows = build_benchmark_rows(search_run, limit=2)
+
+    assert len(rows) == 2
+    assert rows[0]["Rank"] == 1
+    assert rows[0]["Nome"]
+    assert rows[0]["Score"] >= rows[1]["Score"]
+    assert rows[0]["Slug"]
+    assert rows[0]["Queries"] >= 1
+    assert rows[0]["Melhor rank"] >= 1
+
+
+def test_build_effective_settings_can_force_real_search_without_mock_fallback() -> None:
+    settings = Settings(
+        app_env="test",
+        database_path="test.sqlite3",
+        search_provider="brave_search",
+        public_search_url="https://example.com/search",
+        public_search_timeout_seconds=1,
+        public_search_max_results=5,
+        public_search_fallback_to_mock=True,
+        brave_search_api_key="test-key",
+    )
+
+    effective_settings = build_effective_settings(settings, force_real_search=True)
+
+    assert settings.public_search_fallback_to_mock is True
+    assert effective_settings.public_search_fallback_to_mock is False
+    assert effective_settings.search_provider == settings.search_provider
 
 
 def test_build_export_rows_contains_shortlist_fields() -> None:

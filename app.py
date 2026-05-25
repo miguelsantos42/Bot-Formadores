@@ -1,6 +1,7 @@
 from typing import Any
 
 import csv
+from dataclasses import replace
 import hashlib
 import json
 from io import StringIO
@@ -209,6 +210,123 @@ def build_score_components(result: CandidateResult) -> dict[str, int]:
         "Contactabilidade": score.contactabilidade,
         "Credibilidade pública": score.credibilidade_publica,
     }
+
+
+def build_detailed_score_components(result: CandidateResult) -> dict[str, int]:
+    score = result.candidato_classificado.score
+    return {
+        **build_score_components(result),
+        "Qualidade perfil LinkedIn": score.linkedin_profile_quality_score,
+        "Match semântico": score.semantic_topic_match_score,
+        "Sinais de formação": score.trainer_signal_score,
+        "Evidência multi-query": score.multi_query_evidence_score,
+        "Confiança slug LinkedIn": score.linkedin_slug_confidence_score,
+        "Localização melhorada": score.improved_location_score,
+        "Score total": score.score_total,
+    }
+
+
+def build_candidate_evidence_summary(result: CandidateResult) -> dict[str, Any]:
+    candidate = result.candidato_classificado.candidato
+    matched_queries = list(dict.fromkeys(candidate.matched_queries))
+
+    return {
+        "profile_slug": candidate.profile_slug or candidate.linkedin_profile_slug,
+        "queries_found_count": candidate.queries_found_count
+        or candidate.evidence_query_count
+        or len(matched_queries),
+        "best_search_rank": candidate.best_search_rank or candidate.search_rank,
+        "matched_queries": matched_queries,
+        "training_signals": candidate.training_signals,
+        "topic_signals": candidate.topic_signals,
+        "functional_signals": candidate.functional_signals,
+        "profile_type": candidate.profile_type.value,
+        "is_probably_linkedin_profile": candidate.is_probably_linkedin_profile,
+        "result_title_raw": candidate.result_title_raw,
+        "snippet_raw": candidate.snippet_raw,
+    }
+
+
+def build_search_debug_metrics(search_run: SearchRun) -> dict[str, Any]:
+    diagnostics = search_run.diagnostics
+    raw_result_count = diagnostics.raw_result_count if diagnostics else 0
+    final_candidate_count = len(search_run.resultados)
+    merged_profile_count = sum(
+        1
+        for result in search_run.resultados
+        if build_candidate_evidence_summary(result)["queries_found_count"] > 1
+    )
+
+    return {
+        "provider": diagnostics.provider if diagnostics else "unknown",
+        "generated_query_count": len(search_run.queries),
+        "executed_query_count": diagnostics.query_count if diagnostics else 0,
+        "raw_result_count": raw_result_count,
+        "eligible_result_count": diagnostics.eligible_result_count if diagnostics else 0,
+        "final_candidate_count": final_candidate_count,
+        "merged_profile_count": merged_profile_count,
+        "fallback_used": diagnostics.fallback_used if diagnostics else False,
+        "top_query_contributions": build_top_query_contributions(search_run),
+    }
+
+
+def build_top_query_contributions(
+    search_run: SearchRun,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    query_order = {query: index for index, query in enumerate(search_run.queries)}
+    query_counts: dict[str, int] = {}
+
+    for result in search_run.resultados:
+        for query in build_candidate_evidence_summary(result)["matched_queries"]:
+            query_counts[query] = query_counts.get(query, 0) + 1
+
+    return [
+        {
+            "query": query,
+            "candidate_count": count,
+        }
+        for query, count in sorted(
+            query_counts.items(),
+            key=lambda item: (-item[1], query_order.get(item[0], 9999), item[0]),
+        )[:limit]
+    ]
+
+
+def build_benchmark_rows(
+    search_run: SearchRun,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+
+    for index, result in enumerate(search_run.resultados[:limit], start=1):
+        candidate = result.candidato_classificado.candidato
+        score = result.candidato_classificado.score
+        evidence = build_candidate_evidence_summary(result)
+        rows.append(
+            {
+                "Rank": index,
+                "Nome": candidate.nome,
+                "Score": score.score_total,
+                "Slug": evidence["profile_slug"],
+                "Queries": evidence["queries_found_count"],
+                "Melhor rank": evidence["best_search_rank"],
+                "Sinais formação": ", ".join(evidence["training_signals"]),
+                "Sinais tema": ", ".join(evidence["topic_signals"]),
+            }
+        )
+
+    return rows
+
+
+def build_effective_settings(
+    settings: Settings,
+    force_real_search: bool,
+) -> Settings:
+    if not force_real_search:
+        return settings
+
+    return replace(settings, public_search_fallback_to_mock=False)
 
 
 def get_curation_state() -> dict[str, dict[str, str]]:
@@ -468,6 +586,15 @@ def render_request_form() -> tuple[bool, dict[str, Any]]:
                 value=0,
             )
 
+        force_real_search = st.checkbox(
+            "Validar pesquisa real sem fallback mock",
+            value=False,
+            help=(
+                "Desativa o fallback de demonstração neste run para benchmark manual "
+                "da pesquisa real."
+            ),
+        )
+
         submitted = st.form_submit_button("Procurar formadores", type="primary")
 
     return submitted, {
@@ -478,6 +605,7 @@ def render_request_form() -> tuple[bool, dict[str, Any]]:
         "formato": formato,
         "duracao": duracao,
         "numero_participantes": numero_participantes,
+        "force_real_search": force_real_search,
     }
 
 
@@ -497,10 +625,12 @@ def render_search_summary(search_run: SearchRun, run_id: str) -> None:
     st.success(f"Pesquisa guardada com ID: {run_id}")
     render_search_diagnostics(search_run)
 
-    col1, col2, col3 = st.columns(3)
+    debug_metrics = build_search_debug_metrics(search_run)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Queries", len(search_run.queries))
     col2.metric("Candidatos", len(search_run.resultados))
-    col3.metric(
+    col3.metric("Perfis fundidos", debug_metrics["merged_profile_count"])
+    col4.metric(
         "Melhor score",
         search_run.resultados[0].candidato_classificado.score.score_total
         if search_run.resultados
@@ -540,6 +670,16 @@ def render_search_diagnostics(search_run: SearchRun) -> None:
     if diagnostics.provider == "public_web" and diagnostics.public_candidate_count == 0:
         st.warning(
             "A pesquisa pública correu, mas não encontrou candidatos aproveitáveis."
+        )
+
+    if (
+        diagnostics.provider in {"brave", "brave_search", "public_web"}
+        and not diagnostics.fallback_used
+        and diagnostics.public_candidate_count == 0
+    ):
+        st.warning(
+            "A pesquisa real não devolveu candidatos finais. Revê as queries no debug, "
+            "alarga o tema ou confirma a configuração do provider."
         )
 
 
@@ -693,6 +833,16 @@ def render_approved_shortlist(
         )
 
 
+def render_benchmark_overview(search_run: SearchRun) -> None:
+    with st.expander("Benchmark manual: top 5", expanded=False):
+        rows = build_benchmark_rows(search_run)
+        if not rows:
+            st.info("Não há candidatos para comparar neste run.")
+            return
+
+        st.dataframe(rows, hide_index=True, use_container_width=True)
+
+
 def render_candidate_result(
     result: CandidateResult,
     index: int,
@@ -781,17 +931,84 @@ def render_candidate_details(
 ) -> None:
     scored_candidate = result.candidato_classificado
     candidate = scored_candidate.candidato
+    evidence = build_candidate_evidence_summary(result)
 
     with st.expander("Detalhes do candidato", expanded=show_debug):
-        st.write(f"Query: `{format_optional(candidate.matched_query)}`")
-        st.write(f"Título bruto: {format_optional(candidate.result_title_raw)}")
-        st.write(f"Snippet bruto: {format_optional(candidate.snippet_raw)}")
+        st.write("Evidência LinkedIn acumulada")
+        st.dataframe(
+            [
+                {"Campo": "profile_slug", "Valor": format_optional(evidence["profile_slug"])},
+                {
+                    "Campo": "queries_found_count",
+                    "Valor": evidence["queries_found_count"],
+                },
+                {"Campo": "best_search_rank", "Valor": evidence["best_search_rank"]},
+                {
+                    "Campo": "profile_type",
+                    "Valor": PROFILE_TYPE_LABELS.get(
+                        evidence["profile_type"],
+                        evidence["profile_type"],
+                    ),
+                },
+                {
+                    "Campo": "is_probably_linkedin_profile",
+                    "Valor": evidence["is_probably_linkedin_profile"],
+                },
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        if evidence["matched_queries"]:
+            st.write("Queries que encontraram este perfil")
+            st.dataframe(
+                [
+                    {"#": query_index, "Query": query}
+                    for query_index, query in enumerate(
+                        evidence["matched_queries"],
+                        start=1,
+                    )
+                ],
+                hide_index=True,
+                use_container_width=True,
+            )
+
+        st.write("Sinais de ranking")
+        st.dataframe(
+            [
+                {
+                    "Tipo": "Formação",
+                    "Sinais": ", ".join(evidence["training_signals"]) or "Não identificado",
+                },
+                {
+                    "Tipo": "Tema",
+                    "Sinais": ", ".join(evidence["topic_signals"]) or "Não identificado",
+                },
+                {
+                    "Tipo": "Área",
+                    "Sinais": ", ".join(evidence["functional_signals"])
+                    or "Não identificado",
+                },
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        st.write("Título e snippet bruto")
+        st.dataframe(
+            [
+                {"Campo": "Título", "Valor": format_optional(candidate.result_title_raw)},
+                {"Campo": "Snippet", "Valor": format_optional(candidate.snippet_raw)},
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
 
         st.write("Score por componente")
         st.dataframe(
             [
                 {"Componente": component, "Score": value}
-                for component, value in build_score_components(result).items()
+                for component, value in build_detailed_score_components(result).items()
             ],
             hide_index=True,
             use_container_width=True,
@@ -819,6 +1036,58 @@ def render_debug_queries(search_run: SearchRun, show_debug: bool) -> None:
         return
 
     with st.expander("Debug da pesquisa", expanded=False):
+        debug_metrics = build_search_debug_metrics(search_run)
+        st.write("Resumo do run")
+        st.dataframe(
+            [
+                {"Métrica": "Provider ativo", "Valor": debug_metrics["provider"]},
+                {
+                    "Métrica": "Queries geradas",
+                    "Valor": debug_metrics["generated_query_count"],
+                },
+                {
+                    "Métrica": "Queries executadas",
+                    "Valor": debug_metrics["executed_query_count"],
+                },
+                {
+                    "Métrica": "Resultados brutos",
+                    "Valor": debug_metrics["raw_result_count"],
+                },
+                {
+                    "Métrica": "Resultados elegíveis",
+                    "Valor": debug_metrics["eligible_result_count"],
+                },
+                {
+                    "Métrica": "Candidatos finais",
+                    "Valor": debug_metrics["final_candidate_count"],
+                },
+                {
+                    "Métrica": "Perfis com evidência multi-query",
+                    "Valor": debug_metrics["merged_profile_count"],
+                },
+                {
+                    "Métrica": "Fallback usado",
+                    "Valor": debug_metrics["fallback_used"],
+                },
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        if debug_metrics["top_query_contributions"]:
+            st.write("Top queries que contribuíram para candidatos finais")
+            st.dataframe(
+                [
+                    {
+                        "Candidatos": item["candidate_count"],
+                        "Query": item["query"],
+                    }
+                    for item in debug_metrics["top_query_contributions"]
+                ],
+                hide_index=True,
+                use_container_width=True,
+            )
+
         if search_run.diagnostics is not None:
             st.write("Diagnóstico")
             st.json(search_run.diagnostics.model_dump(mode="json"))
@@ -847,7 +1116,11 @@ def main() -> None:
 
         with st.spinner("A procurar candidatos públicos..."):
             try:
-                search_run = build_search_run(request, settings=settings)
+                effective_settings = build_effective_settings(
+                    settings,
+                    force_real_search=bool(form_data.get("force_real_search")),
+                )
+                search_run = build_search_run(request, settings=effective_settings)
             except SearchConfigurationError as error:
                 st.error(str(error))
                 if show_debug:
@@ -901,6 +1174,7 @@ def main() -> None:
 
     render_export_actions(search_run, curation_state, visible_results)
     render_approved_shortlist(search_run, curation_state)
+    render_benchmark_overview(search_run)
 
     if not visible_results:
         st.warning("Não há candidatos para o estado selecionado.")
