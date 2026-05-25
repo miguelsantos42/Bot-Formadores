@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import re
+import unicodedata
 from urllib.parse import urlparse
 
 import requests
@@ -18,12 +19,11 @@ MAX_SEARCH_QUERIES = 48
 MAX_CONSECUTIVE_PUBLIC_SEARCH_ERRORS = 3
 
 QUERY_BUCKET_QUOTAS = {
-    "topic_training": 10,
+    "topic_training_signals": 14,
     "topic_role_domain": 10,
     "topic_pt_en": 8,
-    "topic_training_signals": 8,
-    "topic_location": 6,
-    "exploratory": 6,
+    "topic_location": 8,
+    "exploratory": 8,
 }
 
 PEOPLE_LINKEDIN_TERMS = [
@@ -48,6 +48,13 @@ FREELANCE_LINKEDIN_TERMS = [
 ]
 
 ROLE_DOMAIN_TERMS = [
+    "people development",
+    "career development",
+    "talent development",
+    "leadership",
+    "productivity",
+    "quality",
+    "marketing strategy",
     "specialist",
     "especialista",
     "consultant",
@@ -60,14 +67,16 @@ ROLE_DOMAIN_TERMS = [
 ]
 
 TRAINING_SIGNAL_TERMS = [
-    "training",
-    "formação",
-    "workshop",
-    "workshops",
+    "formador",
+    "formadora",
+    "trainer",
     "speaker",
     "mentor",
     "coach",
     "facilitator",
+    "consultant",
+    "workshop",
+    "workshops",
     "instructor",
 ]
 
@@ -133,8 +142,15 @@ DOMAIN_TOPIC_EXPANSIONS = {
         "recursos humanos",
         "human resources",
         "people management",
+        "HR best practices",
+        "boas práticas de RH",
+    ],
+    "career": [
         "career development",
+        "career coaching",
+        "talent development",
         "gestão de carreira",
+        "desenvolvimento de carreira",
     ],
     "marketing": [
         "marketing estratégico",
@@ -150,11 +166,13 @@ DOMAIN_TOPIC_EXPANSIONS = {
         "liderança",
         "leadership",
         "team leadership",
+        "leadership development",
     ],
     "produtividade": [
         "produtividade",
         "productivity",
         "time management",
+        "performance",
     ],
 }
 
@@ -170,41 +188,41 @@ class SearchConfigurationError(ValueError):
 
 
 def generate_search_queries(request: TrainingRequest) -> list[str]:
+    query_buckets = generate_search_query_buckets(request)
+    queries: list[str] = []
+
+    for bucket_name in QUERY_BUCKET_QUOTAS:
+        queries.extend(query_buckets[bucket_name])
+
+    return dedupe_preserve_order(queries, limit=MAX_SEARCH_QUERIES)
+
+
+def generate_search_query_buckets(request: TrainingRequest) -> dict[str, list[str]]:
     topic = request.tema_formacao.strip()
     area = request.area_interna.strip()
     location_part = build_location_part(request.localizacao)
     topic_terms = build_topic_terms(topic, area)
     role_domain_terms = build_role_domain_terms(topic, area)
 
-    queries: list[str] = []
-    queries.extend(take_bucket(build_topic_training_queries(topic_terms), "topic_training"))
-    queries.extend(
-        take_bucket(
-            build_topic_role_domain_queries(topic_terms, role_domain_terms),
-            "topic_role_domain",
-        )
-    )
-    queries.extend(take_bucket(build_topic_pt_en_queries(topic_terms), "topic_pt_en"))
-    queries.extend(
-        take_bucket(
+    return {
+        "topic_training_signals": take_bucket(
             build_topic_training_signal_queries(topic_terms),
             "topic_training_signals",
-        )
-    )
-    queries.extend(
-        take_bucket(
+        ),
+        "topic_role_domain": take_bucket(
+            build_topic_role_domain_queries(topic_terms, role_domain_terms),
+            "topic_role_domain",
+        ),
+        "topic_pt_en": take_bucket(build_topic_pt_en_queries(topic_terms), "topic_pt_en"),
+        "topic_location": take_bucket(
             build_topic_location_queries(topic_terms, location_part),
             "topic_location",
-        )
-    )
-    queries.extend(
-        take_bucket(
+        ),
+        "exploratory": take_bucket(
             build_exploratory_linkedin_queries(topic_terms, role_domain_terms),
             "exploratory",
-        )
-    )
-
-    return dedupe_preserve_order(queries, limit=MAX_SEARCH_QUERIES)
+        ),
+    }
 
 
 def take_bucket(queries: list[str], bucket_name: str) -> list[str]:
@@ -224,6 +242,9 @@ def build_topic_terms(topic: str, area: str) -> list[str]:
     if has_any(text, ["rh", "recursos humanos", "human resources"]):
         expanded_terms.extend(DOMAIN_TOPIC_EXPANSIONS["rh"])
 
+    if has_any(text, ["carreira", "career", "plano de carreira"]):
+        expanded_terms.extend(DOMAIN_TOPIC_EXPANSIONS["career"])
+
     if has_any(text, ["marketing"]):
         expanded_terms.extend(DOMAIN_TOPIC_EXPANSIONS["marketing"])
 
@@ -236,7 +257,7 @@ def build_topic_terms(topic: str, area: str) -> list[str]:
     if has_any(text, ["produtividade", "productivity"]):
         expanded_terms.extend(DOMAIN_TOPIC_EXPANSIONS["produtividade"])
 
-    return dedupe_preserve_order(expanded_terms, limit=8)
+    return dedupe_preserve_order(expanded_terms, limit=12)
 
 
 def build_role_domain_terms(topic: str, area: str) -> list[str]:
@@ -244,7 +265,26 @@ def build_role_domain_terms(topic: str, area: str) -> list[str]:
     terms = [area.strip()] if area.strip() else []
 
     if has_any(text, ["rh", "recursos humanos", "human resources"]):
-        terms.extend(["hr", "people", "people development", "talent development"])
+        terms.extend(
+            [
+                "hr",
+                "human resources",
+                "people management",
+                "people development",
+                "talent development",
+                "HR best practices",
+            ]
+        )
+
+    if has_any(text, ["carreira", "career", "plano de carreira"]):
+        terms.extend(
+            [
+                "career development",
+                "career coaching",
+                "talent development",
+                "people development",
+            ]
+        )
 
     if has_any(text, ["marketing"]):
         terms.extend(["marketing", "growth", "brand", "marketing strategy"])
@@ -259,22 +299,7 @@ def build_role_domain_terms(topic: str, area: str) -> list[str]:
         terms.extend(["productivity", "time management", "performance"])
 
     terms.extend(ROLE_DOMAIN_TERMS)
-    return dedupe_preserve_order(terms, limit=12)
-
-
-def build_topic_training_queries(topic_terms: list[str]) -> list[str]:
-    queries: list[str] = []
-    for training_term in ["formador", "formadora", "trainer", "speaker", "instructor"]:
-        for term in topic_terms:
-            quoted_term = quote_term(term)
-            queries.append(
-                build_query(
-                    f"site:linkedin.com/in {quoted_term} {training_term}",
-                    LINKEDIN_PEOPLE_EXCLUSIONS,
-                )
-            )
-
-    return queries
+    return dedupe_preserve_order(terms, limit=14)
 
 
 def build_topic_role_domain_queries(
@@ -300,7 +325,16 @@ def build_topic_role_domain_queries(
 
 def build_topic_pt_en_queries(topic_terms: list[str]) -> list[str]:
     queries: list[str] = []
-    language_signals = ["formação", "training", "consultoria", "consulting"]
+    language_signals = [
+        "formação",
+        "training",
+        "workshop",
+        "mentoria",
+        "mentoring",
+        "consultoria",
+        "consulting",
+        "coaching",
+    ]
     for language_signal in language_signals:
         for term in topic_terms:
             quoted_term = quote_term(term)
@@ -337,8 +371,8 @@ def build_topic_location_queries(
         return []
 
     queries: list[str] = []
-    for signal in ["trainer", "formador", "speaker", "consultant"]:
-        for term in topic_terms:
+    for signal in ["trainer", "formador", "speaker", "mentor", "consultant"]:
+        for term in topic_terms[:6]:
             quoted_term = quote_term(term)
             queries.append(
                 build_query(
@@ -394,11 +428,16 @@ def quote_term(value: str) -> str:
 
 
 def has_any(text: str, values: list[str]) -> bool:
-    return any(value in text for value in values)
+    return any(normalize_query_text(value) in text for value in values)
 
 
 def normalize_query_text(value: str) -> str:
-    return value.strip().lower()
+    normalized = unicodedata.normalize("NFKD", value.strip().lower())
+    return "".join(
+        character
+        for character in normalized
+        if not unicodedata.combining(character)
+    )
 
 
 def dedupe_preserve_order(values: list[str], limit: int) -> list[str]:
@@ -820,9 +859,6 @@ def is_relevant_public_result(
     result: PublicSearchResult,
     request: TrainingRequest,
 ) -> bool:
-    if is_job_board_result(result):
-        return False
-
     return is_eligible_linkedin_profile_result(result)
 
 
@@ -835,23 +871,20 @@ def is_eligible_linkedin_profile_result(result: PublicSearchResult) -> bool:
 
 
 def is_irrelevant_linkedin_result(result: PublicSearchResult) -> bool:
-    url = result.url.lower()
-    text = searchable_result_text(result)
-    blocked_terms = [
-        "linkedin job",
-        "jobs on linkedin",
-        "vagas",
-        "ofertas de emprego",
-        "company page",
-        "school page",
-        "pulse",
-        "feed",
+    parsed_url = urlparse(result.url)
+    path_parts = [
+        part.lower()
+        for part in parsed_url.path.split("/")
+        if part
     ]
 
-    if any(f"/{part}/" in url for part in LINKEDIN_NON_PROFILE_PATH_PARTS):
+    if path_parts[:1] == ["in"]:
+        return False
+
+    if any(part in LINKEDIN_NON_PROFILE_PATH_PARTS for part in path_parts):
         return True
 
-    return any(term in text for term in blocked_terms)
+    return False
 
 
 def build_linkedin_profile_key(raw_url: str) -> str | None:

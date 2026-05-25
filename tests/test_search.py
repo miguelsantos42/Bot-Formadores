@@ -15,6 +15,7 @@ from bot.search import (
     dedupe_preserve_order,
     enrich_public_candidate_metadata,
     extract_linkedin_profile_slug,
+    generate_search_query_buckets,
     generate_search_queries,
     get_search_provider,
     has_freelance_signal,
@@ -92,14 +93,34 @@ def test_generate_search_queries_are_ordered_by_priority() -> None:
     assert all("site:linkedin.com/company" not in query for query in queries)
     assert queries[0].endswith("-jobs -job -careers -company -companies -pulse -posts -school")
     assert "formador" in queries[0]
+    assert "freelance" not in " ".join(queries[:20]).lower()
+    assert "freelancer" not in " ".join(queries[:20]).lower()
     assert any("training" in query for query in queries)
     assert any("speaker" in query for query in queries)
 
 
-def test_generate_search_queries_respect_group_quotas() -> None:
+def test_generate_search_query_buckets_are_explicit_and_respect_quotas() -> None:
+    buckets = generate_search_query_buckets(make_request())
+
+    assert list(buckets) == [
+        "topic_training_signals",
+        "topic_role_domain",
+        "topic_pt_en",
+        "topic_location",
+        "exploratory",
+    ]
+    assert all(len(queries) <= QUERY_BUCKET_QUOTAS[name] for name, queries in buckets.items())
+    assert all(buckets[name] for name in QUERY_BUCKET_QUOTAS)
+    assert buckets["topic_training_signals"][0].startswith("site:linkedin.com/in")
+    assert "formador" in buckets["topic_training_signals"][0]
+
+
+def test_generate_search_queries_respect_total_limit_and_linkedin_only_scope() -> None:
     queries = generate_search_queries(make_request())
 
     assert sum(query.startswith("site:linkedin.com/in") for query in queries) == len(queries)
+    assert all("site:linkedin.com/company" not in query for query in queries)
+    assert all(" OR " not in query for query in queries)
     assert len(queries) <= MAX_SEARCH_QUERIES
     assert len(queries) >= 30
     assert sum(QUERY_BUCKET_QUOTAS.values()) == MAX_SEARCH_QUERIES
@@ -128,10 +149,13 @@ def test_generate_search_queries_expand_hr_terms_with_controlled_limit() -> None
     topic_terms = build_topic_terms(request.tema_formacao, request.area_interna)
     queries = generate_search_queries(request)
 
-    assert len(topic_terms) <= 8
+    assert len(topic_terms) <= 12
     assert "recursos humanos" in topic_terms
     assert "human resources" in topic_terms
+    assert "HR best practices" in topic_terms
+    assert "career coaching" in topic_terms
     assert "career development" in topic_terms
+    assert "talent development" in topic_terms
     assert "gestão de carreira" in topic_terms
     assert any('"recursos humanos"' in query for query in queries)
     assert len(queries) <= MAX_SEARCH_QUERIES
@@ -166,6 +190,34 @@ def test_generate_search_queries_expand_marketing_terms() -> None:
     assert any('"strategic marketing"' in query for query in queries)
     assert len(queries) <= MAX_SEARCH_QUERIES
     assert len(queries) >= 30
+
+
+def test_generate_search_queries_expand_hr_best_practices_terms() -> None:
+    request = TrainingRequest(
+        tema_formacao="boas práticas de RH",
+        area_interna="Recursos Humanos",
+        descricao_contexto="Sessao interna para membros da JuniFEUP.",
+        localizacao="Portugal",
+    )
+
+    topic_terms = build_topic_terms(request.tema_formacao, request.area_interna)
+    queries = generate_search_queries(request)
+
+    assert "human resources" in topic_terms
+    assert "people management" in topic_terms
+    assert "HR best practices" in topic_terms
+    assert any('"HR best practices"' in query for query in queries)
+    assert all(query.startswith("site:linkedin.com/in") for query in queries)
+
+
+def test_generate_search_queries_do_not_depend_on_freelance_terms() -> None:
+    queries = generate_search_queries(make_request())
+    query_text = " ".join(queries).lower()
+
+    assert "freelance" not in query_text
+    assert "freelancer" not in query_text
+    assert "independent consultant" not in query_text
+    assert "self employed" not in query_text
 
 
 def test_dedupe_preserve_order_keeps_first_values() -> None:
@@ -717,6 +769,40 @@ def test_linkedin_profile_without_topic_evidence_is_still_eligible() -> None:
     )
 
     assert is_relevant_public_result(result, make_request())
+
+
+def test_generic_linkedin_profile_with_partial_signal_is_still_eligible() -> None:
+    result = PublicSearchResult(
+        title="Ana Silva - People Development Manager",
+        url="https://www.linkedin.com/in/ana-silva",
+        snippet="Leadership, career development and people management.",
+        matched_query="site:linkedin.com/in Python people development",
+        source_domain="linkedin.com",
+    )
+
+    assert is_relevant_public_result(result, make_request())
+
+
+def test_linkedin_non_profile_pages_are_not_relevant() -> None:
+    blocked_urls = [
+        "https://www.linkedin.com/jobs/view/123",
+        "https://www.linkedin.com/posts/ana-silva_python-training",
+        "https://www.linkedin.com/feed/update/urn:li:activity:123",
+        "https://www.linkedin.com/company/empresa-x",
+        "https://www.linkedin.com/school/universidade-x",
+        "https://www.linkedin.com/pulse/python-training-ana-silva",
+    ]
+
+    for url in blocked_urls:
+        result = PublicSearchResult(
+            title="Ana Silva - Python training",
+            url=url,
+            snippet="Training and consulting.",
+            matched_query="site:linkedin.com/in Python trainer",
+            source_domain="linkedin.com",
+        )
+
+        assert not is_relevant_public_result(result, make_request())
 
 
 def test_normalize_linkedin_profile_url_removes_params_fragments_and_trailing_path() -> None:
