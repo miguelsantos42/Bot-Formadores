@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import re
 import unicodedata
-from urllib.parse import urlparse
+from urllib.parse import ParseResult, unquote, urlparse
 
 import requests
 
@@ -871,7 +871,7 @@ def is_eligible_linkedin_profile_result(result: PublicSearchResult) -> bool:
 
 
 def is_irrelevant_linkedin_result(result: PublicSearchResult) -> bool:
-    parsed_url = urlparse(result.url)
+    parsed_url = parse_url_with_default_scheme(result.url)
     path_parts = [
         part.lower()
         for part in parsed_url.path.split("/")
@@ -904,9 +904,9 @@ def normalize_linkedin_profile_url(raw_url: str) -> str | None:
 
 
 def extract_linkedin_profile_slug(raw_url: str) -> str | None:
-    parsed_url = urlparse(raw_url)
+    parsed_url = parse_url_with_default_scheme(raw_url)
     domain = parsed_url.netloc.lower().removeprefix("www.")
-    if domain not in {"linkedin.com", "linkedin.pt"}:
+    if domain != "linkedin.com" and not domain.endswith(".linkedin.com"):
         return None
 
     path_parts = [
@@ -920,11 +920,19 @@ def extract_linkedin_profile_slug(raw_url: str) -> str | None:
     if path_parts[0].lower() != "in":
         return None
 
-    slug = path_parts[1].strip().lower()
+    slug = unquote(path_parts[1]).strip().strip("/").lower()
     if not slug or slug in LINKEDIN_NON_PROFILE_PATH_PARTS:
         return None
 
     return slug
+
+
+def parse_url_with_default_scheme(raw_url: str) -> ParseResult:
+    parsed_url = urlparse(raw_url)
+    if parsed_url.netloc:
+        return parsed_url
+
+    return urlparse(f"https://{raw_url.lstrip('/')}")
 
 
 def has_freelance_signal(result: PublicSearchResult) -> bool:
@@ -983,8 +991,10 @@ def enrich_public_candidate_metadata(
         update={
             "links": links,
             "search_rank": search_rank,
+            "best_search_rank": search_rank,
             "search_ranks": [search_rank],
             "matched_queries": [result.matched_query],
+            "queries_found_count": 1,
             "evidence_titles": [result.title],
             "evidence_snippets": [result.snippet] if result.snippet else [],
             "training_signals": collect_training_signals(result),
@@ -997,6 +1007,7 @@ def enrich_public_candidate_metadata(
             "is_probably_linkedin_profile": is_probably_linkedin_profile(result),
             "linkedin_profile_url": normalized_profile_url,
             "linkedin_profile_slug": profile_slug,
+            "profile_slug": profile_slug,
         }
     )
 
@@ -1019,8 +1030,13 @@ def merge_candidate_evidence(existing: Candidate, incoming: Candidate) -> Candid
             "excerto": best_candidate.excerto or existing.excerto,
             "matched_query": best_candidate.matched_query or existing.matched_query,
             "search_rank": best_candidate.search_rank or existing.search_rank,
+            "best_search_rank": best_candidate.best_search_rank
+            or best_candidate.search_rank
+            or existing.best_search_rank
+            or existing.search_rank,
             "search_ranks": merged_ranks,
             "matched_queries": merged_queries,
+            "queries_found_count": len(merged_queries),
             "evidence_titles": merged_titles,
             "evidence_snippets": merged_snippets,
             "training_signals": merge_unique(
@@ -1039,6 +1055,14 @@ def merge_candidate_evidence(existing: Candidate, incoming: Candidate) -> Candid
             "snippet_raw": best_candidate.snippet_raw or existing.snippet_raw,
             "result_title_raw": best_candidate.result_title_raw
             or existing.result_title_raw,
+            "linkedin_profile_url": existing.linkedin_profile_url
+            or incoming.linkedin_profile_url,
+            "linkedin_profile_slug": existing.linkedin_profile_slug
+            or incoming.linkedin_profile_slug,
+            "profile_slug": existing.profile_slug
+            or incoming.profile_slug
+            or existing.linkedin_profile_slug
+            or incoming.linkedin_profile_slug,
         }
     )
 

@@ -645,8 +645,11 @@ def test_public_web_search_provider_deduplicates_equivalent_linkedin_urls(
     assert len(candidates) == 1
     assert candidates[0].linkedin_profile_url == "https://www.linkedin.com/in/ana-silva"
     assert candidates[0].linkedin_profile_slug == "ana-silva"
+    assert candidates[0].profile_slug == "ana-silva"
     assert candidates[0].evidence_query_count > 1
+    assert candidates[0].queries_found_count > 1
     assert candidates[0].search_rank == 1
+    assert candidates[0].best_search_rank == 1
     assert len(candidates[0].evidence_titles) == 2
 
 
@@ -812,6 +815,27 @@ def test_normalize_linkedin_profile_url_removes_params_fragments_and_trailing_pa
     assert extract_linkedin_profile_slug(url) == "ana-silva"
 
 
+def test_normalize_linkedin_profile_url_handles_equivalent_public_urls() -> None:
+    equivalent_urls = [
+        "https://www.linkedin.com/in/Ana-Silva/",
+        "https://www.linkedin.com/in/ana-silva?trk=public_profile",
+        "https://www.linkedin.com/in/ana-silva#experience",
+        "https://pt.linkedin.com/in/ana-silva/details/experience/",
+        "linkedin.com/in/ana-silva/",
+    ]
+
+    assert {
+        normalize_linkedin_profile_url(url)
+        for url in equivalent_urls
+    } == {"https://www.linkedin.com/in/ana-silva"}
+
+
+def test_extract_linkedin_profile_slug_rejects_non_profile_urls() -> None:
+    assert extract_linkedin_profile_slug("https://www.linkedin.com/company/acme") is None
+    assert extract_linkedin_profile_slug("https://www.linkedin.com/jobs/view/123") is None
+    assert extract_linkedin_profile_slug("https://example.com/in/ana-silva") is None
+
+
 def test_company_linkedin_page_is_not_relevant_even_with_training_terms() -> None:
     result = PublicSearchResult(
         title="Empresa X | LinkedIn",
@@ -895,11 +919,14 @@ def test_enrich_public_candidate_metadata_preserves_query_and_source() -> None:
     assert enriched_candidate.matched_query == candidate.matched_query
     assert enriched_candidate.source_domain == "linkedin.com"
     assert enriched_candidate.search_rank == 2
+    assert enriched_candidate.best_search_rank == 2
     assert enriched_candidate.result_title_raw == result.title
     assert enriched_candidate.snippet_raw == result.snippet
     assert enriched_candidate.profile_type == ProfileType.linkedin_profile
+    assert enriched_candidate.profile_slug == "ana-silva"
     assert enriched_candidate.search_ranks == [2]
     assert enriched_candidate.matched_queries == [result.matched_query]
+    assert enriched_candidate.queries_found_count == 1
     assert enriched_candidate.evidence_titles == [result.title]
     assert enriched_candidate.evidence_snippets == [result.snippet]
     assert "trainer" in enriched_candidate.training_signals
@@ -937,11 +964,52 @@ def test_merge_candidate_evidence_preserves_best_rank_and_distinct_queries() -> 
     merged = merge_candidate_evidence(first, second)
 
     assert merged.search_rank == 2
+    assert merged.best_search_rank == 2
     assert merged.search_ranks == [2, 5]
     assert merged.evidence_query_count == 2
+    assert merged.queries_found_count == 2
+    assert merged.profile_slug == "ana-silva"
     assert merged.matched_queries == [
         "site:linkedin.com/in Python trainer",
         "site:linkedin.com/in Python speaker",
     ]
     assert merged.result_title_raw == "Ana Silva - Python Speaker | LinkedIn"
     assert "speaker" in merged.training_signals
+
+
+def test_merge_candidate_evidence_deduplicates_matched_queries() -> None:
+    request = make_request()
+    first = enrich_public_candidate_metadata(
+        candidate=MockSearchProvider().search(request)[0],
+        result=PublicSearchResult(
+            title="Ana Silva - Python Trainer | LinkedIn",
+            url="https://www.linkedin.com/in/ana-silva",
+            snippet="Python trainer.",
+            matched_query="site:linkedin.com/in Python trainer",
+            source_domain="linkedin.com",
+        ),
+        search_rank=4,
+        request=request,
+    )
+    second = enrich_public_candidate_metadata(
+        candidate=MockSearchProvider().search(request)[0],
+        result=PublicSearchResult(
+            title="Ana Silva - Python Trainer | LinkedIn",
+            url="https://pt.linkedin.com/in/ana-silva/?trk=public_profile",
+            snippet="Python trainer and mentor.",
+            matched_query="site:linkedin.com/in Python trainer",
+            source_domain="pt.linkedin.com",
+        ),
+        search_rank=1,
+        request=request,
+    )
+
+    merged = merge_candidate_evidence(first, second)
+
+    assert merged.linkedin_profile_url == "https://www.linkedin.com/in/ana-silva"
+    assert merged.profile_slug == "ana-silva"
+    assert merged.matched_queries == ["site:linkedin.com/in Python trainer"]
+    assert merged.queries_found_count == 1
+    assert merged.evidence_query_count == 1
+    assert merged.best_search_rank == 1
+    assert merged.search_rank == 1

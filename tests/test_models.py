@@ -74,7 +74,13 @@ def test_candidate_accepts_public_links() -> None:
         fonte="mock",
         matched_query="Python Tecnologia freelancer",
         source_domain="linkedin.com",
+        linkedin_profile_url="https://www.linkedin.com/in/ana-silva",
+        linkedin_profile_slug="ana-silva",
+        profile_slug="ana-silva",
         search_rank=1,
+        best_search_rank=1,
+        matched_queries=["Python trainer"],
+        queries_found_count=1,
         snippet_raw="Ana Silva is a freelance trainer.",
         result_title_raw="Ana Silva - Freelance Python Trainer | LinkedIn",
         profile_type=ProfileType.linkedin_profile,
@@ -87,7 +93,13 @@ def test_candidate_accepts_public_links() -> None:
     assert candidate.links[0].label == "LinkedIn"
     assert candidate.matched_query == "Python Tecnologia freelancer"
     assert candidate.source_domain == "linkedin.com"
+    assert candidate.linkedin_profile_url == "https://www.linkedin.com/in/ana-silva"
+    assert candidate.linkedin_profile_slug == "ana-silva"
+    assert candidate.profile_slug == "ana-silva"
     assert candidate.search_rank == 1
+    assert candidate.best_search_rank == 1
+    assert candidate.matched_queries == ["Python trainer"]
+    assert candidate.queries_found_count == 1
     assert candidate.snippet_raw == "Ana Silva is a freelance trainer."
     assert candidate.result_title_raw == "Ana Silva - Freelance Python Trainer | LinkedIn"
     assert candidate.profile_type == ProfileType.linkedin_profile
@@ -101,9 +113,12 @@ def test_candidate_defaults_public_profile_metadata() -> None:
     )
 
     assert candidate.search_rank is None
+    assert candidate.best_search_rank is None
     assert candidate.search_ranks == []
     assert candidate.matched_queries == []
+    assert candidate.queries_found_count == 0
     assert candidate.evidence_query_count == 0
+    assert candidate.profile_slug is None
     assert candidate.training_signals == []
     assert candidate.topic_signals == []
     assert candidate.snippet_raw is None
@@ -136,6 +151,24 @@ def test_candidate_rejects_invalid_search_rank() -> None:
             nome="Ana Silva",
             fonte="public_web",
             search_rank=0,
+        )
+
+
+def test_candidate_rejects_invalid_best_search_rank() -> None:
+    with pytest.raises(ValidationError):
+        Candidate(
+            nome="Ana Silva",
+            fonte="public_web",
+            best_search_rank=0,
+        )
+
+
+def test_candidate_rejects_invalid_queries_found_count() -> None:
+    with pytest.raises(ValidationError):
+        Candidate(
+            nome="Ana Silva",
+            fonte="public_web",
+            queries_found_count=-1,
         )
 
 

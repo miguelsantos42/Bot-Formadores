@@ -56,9 +56,12 @@ class Candidate(BaseModel):
     source_domain: str | None = None
     linkedin_profile_url: str | None = None
     linkedin_profile_slug: str | None = None
+    profile_slug: str | None = None
     search_rank: int | None = Field(default=None, ge=1)
+    best_search_rank: int | None = Field(default=None, ge=1)
     search_ranks: list[int] = Field(default_factory=list)
     matched_queries: list[str] = Field(default_factory=list)
+    queries_found_count: int = Field(default=0, ge=0)
     evidence_titles: list[str] = Field(default_factory=list)
     evidence_snippets: list[str] = Field(default_factory=list)
     training_signals: list[str] = Field(default_factory=list)
