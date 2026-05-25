@@ -26,7 +26,7 @@ class ProfileType(str, Enum):
 
 
 class TrainingRequest(BaseModel):
-    tema_formacao: str = Field(min_length=3)
+    tema_formacao: str = Field(min_length=2)
     area_interna: str = Field(min_length=2)
     descricao_contexto: str = Field(min_length=10)
 
@@ -84,6 +84,14 @@ class OutreachMessages(BaseModel):
     mensagem_linkedin: str
 
 
+class SearchDiagnostics(BaseModel):
+    provider: str
+    public_candidate_count: int = 0
+    fallback_used: bool = False
+    fallback_provider: str | None = None
+    fallback_reason: str | None = None
+
+
 class CandidateResult(BaseModel):
     candidato_classificado: ScoredCandidate
     mensagens: OutreachMessages
@@ -93,3 +101,4 @@ class SearchRun(BaseModel):
     pedido: TrainingRequest
     queries: list[str]
     resultados: list[CandidateResult]
+    diagnostics: SearchDiagnostics | None = None

@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
+import re
 
 import requests
 
@@ -12,10 +12,8 @@ from bot.parsing import (
 )
 
 MAX_SEARCH_QUERIES = 20
-LINKEDIN_PEOPLE_QUERY_LIMIT = 10
-LINKEDIN_COMPANY_QUERY_LIMIT = 4
-PUBLIC_GENERAL_QUERY_LIMIT = 4
-EXPERIMENTAL_QUERY_LIMIT = 2
+LINKEDIN_PEOPLE_QUERY_LIMIT = 20
+MAX_CONSECUTIVE_PUBLIC_SEARCH_ERRORS = 3
 
 PEOPLE_LINKEDIN_TERMS = [
     "formador",
@@ -28,27 +26,13 @@ PEOPLE_LINKEDIN_TERMS = [
     "facilitator",
 ]
 
-COMPANY_LINKEDIN_TERMS = [
-    "formação",
-    "training",
-    "consultoria",
-    "consulting",
-    "workshops",
-]
-
-PUBLIC_PROFILE_TERMS = [
-    "workshop",
-    "trainer",
-    "speaker",
-    "consultant",
-    "coach",
-    "portfolio",
-]
-
-EXPERIMENTAL_TERMS = [
+FREELANCE_LINKEDIN_TERMS = [
     "freelancer",
+    "freelance",
+    "consultor independente",
+    "consultora independente",
     "independent consultant",
-    "facilitator",
+    "self employed",
 ]
 
 LINKEDIN_PEOPLE_EXCLUSIONS = [
@@ -56,26 +40,24 @@ LINKEDIN_PEOPLE_EXCLUSIONS = [
     "-job",
     "-careers",
     "-company",
+    "-companies",
     "-pulse",
     "-posts",
+    "-school",
 ]
 
-LINKEDIN_COMPANY_EXCLUSIONS = [
-    "-jobs",
-    "-job",
-    "-careers",
-    "-vagas",
-    "-emprego",
+FREELANCE_SIGNAL_TERMS = [
+    "freelance",
+    "freelancer",
+    "independent",
+    "independente",
+    "self-employed",
+    "self employed",
+    "consultor independente",
+    "consultora independente",
 ]
 
-PUBLIC_GENERAL_EXCLUSIONS = [
-    "-wikipedia",
-    "-youtube",
-]
-
-EXPERIMENTAL_EXCLUSIONS = [
-    "-wikipedia",
-]
+TRAINING_EXPERIENCE_SIGNAL_TERMS = PEOPLE_LINKEDIN_TERMS + ["workshop", "workshops"]
 
 DOMAIN_TOPIC_EXPANSIONS = {
     "rh": [
@@ -126,19 +108,6 @@ def generate_search_queries(request: TrainingRequest) -> list[str]:
             :LINKEDIN_PEOPLE_QUERY_LIMIT
         ]
     )
-    queries.extend(
-        build_linkedin_company_queries(topic_terms, location_part)[
-            :LINKEDIN_COMPANY_QUERY_LIMIT
-        ]
-    )
-    queries.extend(
-        build_public_general_queries(topic_terms, location_part)[
-            :PUBLIC_GENERAL_QUERY_LIMIT
-        ]
-    )
-    queries.extend(
-        build_experimental_queries(topic_terms, location_part)[:EXPERIMENTAL_QUERY_LIMIT]
-    )
 
     return dedupe_preserve_order(queries, limit=MAX_SEARCH_QUERIES)
 
@@ -175,78 +144,30 @@ def build_linkedin_people_queries(
     location_part: str,
 ) -> list[str]:
     queries: list[str] = []
-
-    for term in topic_terms[:4]:
-        quoted_term = quote_term(term)
-
-        for people_term in PEOPLE_LINKEDIN_TERMS[:4]:
-            queries.append(
-                build_query(
-                    f"site:linkedin.com/in {quoted_term} {people_term}{location_part}",
-                    LINKEDIN_PEOPLE_EXCLUSIONS,
-                )
-            )
-
-    return queries
-
-
-def build_linkedin_company_queries(
-    topic_terms: list[str],
-    location_part: str,
-) -> list[str]:
-    queries: list[str] = []
-
-    for term in topic_terms[:3]:
-        quoted_term = quote_term(term)
-
-        for company_term in COMPANY_LINKEDIN_TERMS[:2]:
-            queries.append(
-                build_query(
-                    f"site:linkedin.com/company {quoted_term} {company_term}{location_part}",
-                    LINKEDIN_COMPANY_EXCLUSIONS,
-                )
-            )
-
-    return queries
-
-
-def build_public_general_queries(
-    topic_terms: list[str],
-    location_part: str,
-) -> list[str]:
-    queries: list[str] = []
-    public_patterns = [
-        " ".join(PUBLIC_PROFILE_TERMS[:3]),
-        " ".join(PUBLIC_PROFILE_TERMS[3:6]),
+    query_patterns = [
+        ("freelancer", "formador"),
+        ("freelance", "trainer"),
+        ("freelancer", "formadora"),
+        ("freelance", "speaker"),
+        ("consultor independente", "workshop"),
+        ("independent consultant", "training"),
+        ("self employed", "mentor"),
+        ("freelancer", "consultant"),
     ]
 
-    for public_terms in public_patterns:
-        for term in topic_terms[:4]:
+    for freelance_term, people_term in query_patterns:
+        quoted_freelance_term = quote_term(freelance_term)
+
+        for term in topic_terms[:8]:
             quoted_term = quote_term(term)
             queries.append(
                 build_query(
-                    f"{quoted_term} {public_terms}{location_part}",
-                    PUBLIC_GENERAL_EXCLUSIONS,
-                )
-            )
-
-    return queries
-
-
-def build_experimental_queries(
-    topic_terms: list[str],
-    location_part: str,
-) -> list[str]:
-    queries: list[str] = []
-
-    for term in topic_terms[:3]:
-        quoted_term = quote_term(term)
-
-        for experimental_term in EXPERIMENTAL_TERMS[:2]:
-            queries.append(
-                build_query(
-                    f"{quoted_term} {experimental_term}{location_part}",
-                    EXPERIMENTAL_EXCLUSIONS,
+                    (
+                        "site:linkedin.com/in "
+                        f"{quoted_term} {quoted_freelance_term} "
+                        f"{people_term}{location_part}"
+                    ),
+                    LINKEDIN_PEOPLE_EXCLUSIONS,
                 )
             )
 
@@ -319,31 +240,29 @@ class MockSearchProvider(SearchProvider):
         return [
             Candidate(
                 nome="Ana Silva",
-                cargo=f"Especialista em {request.tema_formacao}",
-                empresa="Tech Learning Studio",
+                cargo=f"Freelance {request.tema_formacao} trainer",
+                empresa="Freelancer",
                 localizacao=request.localizacao or "Portugal",
                 links=[
                     PublicLink(
                         label="LinkedIn",
                         url="https://www.linkedin.com/in/ana-silva",
                     ),
-                    PublicLink(
-                        label="Website",
-                        url="https://example.com/ana-silva",
-                    ),
                 ],
                 email_publico="ana.silva@example.com",
                 fonte="mock",
                 excerto=(
                     f"Perfil encontrado para a query '{queries[0]}'. "
-                    "Experiência em workshops e sessões práticas."
+                    f"Freelancer com experiência em workshops de {request.tema_formacao}."
                 ),
                 matched_query=queries[0],
                 source_domain="linkedin.com",
+                profile_type=ProfileType.linkedin_profile,
+                is_probably_linkedin_profile=True,
             ),
             Candidate(
                 nome="Joao Pereira",
-                cargo="Consultor e formador",
+                cargo=f"Consultor independente e formador em {request.tema_formacao}",
                 empresa="Freelancer",
                 localizacao="Porto",
                 links=[
@@ -356,30 +275,35 @@ class MockSearchProvider(SearchProvider):
                 fonte="mock",
                 excerto=(
                     f"Perfil encontrado para a query '{queries[1]}'. "
-                    "Conteúdos públicos indicam experiência como speaker."
+                    f"Conteúdos públicos indicam experiência como freelancer "
+                    f"e speaker em {request.tema_formacao}."
                 ),
                 matched_query=queries[1],
                 source_domain="linkedin.com",
+                profile_type=ProfileType.linkedin_profile,
+                is_probably_linkedin_profile=True,
             ),
             Candidate(
                 nome="Mariana Costa",
-                cargo="Head of People Development",
-                empresa="Empresa Exemplo",
+                cargo=f"Freelance workshop facilitator em {request.tema_formacao}",
+                empresa="Freelancer",
                 localizacao="Lisboa",
                 links=[
                     PublicLink(
-                        label="Perfil publico",
-                        url="https://example.com/mariana-costa",
+                        label="LinkedIn",
+                        url="https://www.linkedin.com/in/mariana-costa",
                     )
                 ],
                 email_publico="formacao@example.com",
                 fonte="mock",
                 excerto=(
                     f"Perfil encontrado para a query '{queries[2]}'. "
-                    "Ligação forte a aprendizagem interna e desenvolvimento de equipas."
+                    f"Perfil freelancer com experiência prática em {request.tema_formacao}."
                 ),
                 matched_query=queries[2],
-                source_domain="example.com",
+                source_domain="linkedin.com",
+                profile_type=ProfileType.linkedin_profile,
+                is_probably_linkedin_profile=True,
             ),
         ]
 
@@ -398,13 +322,21 @@ class PublicWebSearchProvider(SearchProvider):
     def search(self, request: TrainingRequest) -> list[Candidate]:
         candidates: list[Candidate] = []
         seen_urls: set[str] = set()
+        consecutive_errors = 0
 
         for query in generate_search_queries(request):
-            for search_rank, result in enumerate(
-                self._safe_fetch_results(query),
-                start=1,
-            ):
-                if not is_relevant_public_result(result):
+            try:
+                fetched_results = self._fetch_results(query)
+            except requests.RequestException:
+                consecutive_errors += 1
+                if consecutive_errors >= MAX_CONSECUTIVE_PUBLIC_SEARCH_ERRORS:
+                    break
+                continue
+
+            consecutive_errors = 0
+
+            for search_rank, result in enumerate(fetched_results, start=1):
+                if not is_relevant_public_result(result, request):
                     continue
 
                 if result.url in seen_urls:
@@ -424,20 +356,25 @@ class PublicWebSearchProvider(SearchProvider):
 
         return candidates
 
-    def _safe_fetch_results(self, query: str) -> Iterable[PublicSearchResult]:
-        try:
-            return self._fetch_results(query)
-        except requests.RequestException:
-            return []
-
     def _fetch_results(self, query: str) -> list[PublicSearchResult]:
+        params = {"q": query}
+        if "bing.com" in self.search_url:
+            params.update(
+                {
+                    "adlt": "strict",
+                    "setlang": "pt-PT",
+                    "cc": "pt",
+                }
+            )
+
         response = requests.get(
             self.search_url,
-            params={"q": query},
+            params=params,
             headers={
                 "User-Agent": (
-                    "Mozilla/5.0 compatible; Bot-Formadores/1.0; "
-                    "public web search"
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0 Safari/537.36"
                 )
             },
             timeout=self.timeout_seconds,
@@ -447,28 +384,54 @@ class PublicWebSearchProvider(SearchProvider):
         return parse_search_results_html(response.text, matched_query=query)
 
 
-def is_relevant_public_result(result: PublicSearchResult) -> bool:
-    if "linkedin.com" in result.source_domain and "/in/" in result.url:
-        return True
-
+def is_relevant_public_result(
+    result: PublicSearchResult,
+    request: TrainingRequest,
+) -> bool:
     if is_job_board_result(result):
         return False
 
-    text = " ".join([result.title, result.snippet]).lower()
-    keywords = [
-        "freelance",
-        "freelancer",
-        "formador",
-        "formadora",
-        "trainer",
-        "consultor",
-        "consultora",
-        "speaker",
-        "workshop",
-        "portfolio",
-    ]
+    return (
+        is_probably_linkedin_profile(result)
+        and has_freelance_signal(result)
+        and has_training_experience_signal(result)
+        and has_topic_experience_signal(result, request)
+    )
 
-    return any(keyword in text for keyword in keywords)
+
+def has_freelance_signal(result: PublicSearchResult) -> bool:
+    text = searchable_result_text(result)
+    return any(term in text for term in FREELANCE_SIGNAL_TERMS)
+
+
+def has_training_experience_signal(result: PublicSearchResult) -> bool:
+    text = searchable_result_text(result)
+    return any(term in text for term in TRAINING_EXPERIENCE_SIGNAL_TERMS)
+
+
+def has_topic_experience_signal(
+    result: PublicSearchResult,
+    request: TrainingRequest,
+) -> bool:
+    text = searchable_result_text(result)
+    topic = normalize_query_text(request.tema_formacao)
+
+    if topic and topic in text:
+        return True
+
+    topic_tokens = [
+        token
+        for token in re.findall(r"[\w+#.-]+", topic)
+        if len(token) >= 2
+    ]
+    if not topic_tokens:
+        return False
+
+    return all(token in text for token in topic_tokens)
+
+
+def searchable_result_text(result: PublicSearchResult) -> str:
+    return normalize_query_text(" ".join([result.title, result.snippet]))
 
 
 def enrich_public_candidate_metadata(

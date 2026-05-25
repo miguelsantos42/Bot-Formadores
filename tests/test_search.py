@@ -3,6 +3,7 @@ import requests
 from bot.config import Settings
 from bot.models import ProfileType, TrainingFormat, TrainingRequest
 from bot.search import (
+    MAX_CONSECUTIVE_PUBLIC_SEARCH_ERRORS,
     MockSearchProvider,
     PublicWebSearchProvider,
     build_topic_terms,
@@ -11,6 +12,9 @@ from bot.search import (
     enrich_public_candidate_metadata,
     generate_search_queries,
     get_search_provider,
+    has_freelance_signal,
+    has_topic_experience_signal,
+    has_training_experience_signal,
     is_job_board_result,
     is_probably_linkedin_profile,
     is_relevant_public_result,
@@ -39,6 +43,7 @@ def test_generate_search_queries_uses_request_fields() -> None:
     assert "Python" in queries[0]
     assert "Porto" in queries[0]
     assert queries[0].startswith("site:linkedin.com/in")
+    assert "freelancer" in queries[0]
     assert "formador" in queries[0]
 
 
@@ -61,48 +66,40 @@ def test_generate_search_queries_are_ordered_by_priority() -> None:
 
     queries = generate_search_queries(request)
 
-    people_queries = queries[:10]
-    company_queries = queries[10:14]
-    public_queries = queries[14:18]
-    experimental_queries = queries[18:20]
-
-    assert all(query.startswith("site:linkedin.com/in") for query in people_queries)
-    assert all(query.startswith("site:linkedin.com/company") for query in company_queries)
-    assert all(not query.startswith("site:linkedin.com") for query in public_queries)
-    assert all(not query.startswith("site:linkedin.com") for query in experimental_queries)
+    assert all(query.startswith("site:linkedin.com/in") for query in queries)
+    assert all("site:linkedin.com/company" not in query for query in queries)
+    assert all(
+        any(
+            term in query
+            for term in [
+                "freelance",
+                "freelancer",
+                "independente",
+                "independent",
+                "self employed",
+            ]
+        )
+        for query in queries
+    )
 
 
 def test_generate_search_queries_respect_group_quotas() -> None:
     queries = generate_search_queries(make_request())
 
-    assert sum(query.startswith("site:linkedin.com/in") for query in queries) == 10
-    assert sum(query.startswith("site:linkedin.com/company") for query in queries) == 4
-    assert len(queries[14:18]) == 4
-    assert len(queries[18:20]) == 2
+    assert sum(query.startswith("site:linkedin.com/in") for query in queries) == 20
     assert len(queries) == 20
 
 
-def test_generate_search_queries_use_stronger_linkedin_exclusions() -> None:
+def test_generate_search_queries_use_linkedin_profile_exclusions() -> None:
     request = make_request()
 
     queries = generate_search_queries(request)
 
     assert "-jobs" in queries[0]
     assert "-company" in queries[0]
+    assert "-companies" in queries[0]
     assert "-pulse" in queries[0]
-    assert "-youtube" not in queries[0]
-
-
-def test_generate_search_queries_use_lighter_public_exclusions() -> None:
-    request = make_request()
-
-    queries = generate_search_queries(request)
-    public_query = queries[14]
-
-    assert "-wikipedia" in public_query
-    assert "-youtube" in public_query
-    assert "-jobs" not in public_query
-    assert "-company" not in public_query
+    assert "-school" in queries[0]
 
 
 def test_generate_search_queries_expand_hr_terms_with_controlled_limit() -> None:
@@ -134,7 +131,6 @@ def test_generate_search_queries_include_pt_and_en_training_terms() -> None:
     assert "formadora" in query_text
     assert "trainer" in query_text
     assert "speaker" in query_text
-    assert "formação" in query_text
     assert "training" in query_text
 
 
@@ -174,6 +170,9 @@ def test_mock_search_provider_returns_candidates() -> None:
     assert candidates[0].fonte == "mock"
     assert candidates[0].matched_query
     assert candidates[0].source_domain == "linkedin.com"
+    assert all(candidate.source_domain == "linkedin.com" for candidate in candidates)
+    assert all(candidate.is_probably_linkedin_profile for candidate in candidates)
+    assert all(candidate.empresa == "Freelancer" for candidate in candidates)
 
 
 def test_mock_search_provider_returns_candidates_with_links() -> None:
@@ -192,7 +191,8 @@ def test_mock_search_provider_uses_request_topic_in_candidate_role() -> None:
 
     candidates = provider.search(request)
 
-    assert candidates[0].cargo == "Especialista em Python"
+    assert "Python" in candidates[0].cargo
+    assert "Freelance" in candidates[0].cargo
 
 
 def test_get_search_provider_returns_mock_provider() -> None:
@@ -302,13 +302,13 @@ def test_public_web_search_provider_deduplicates_by_url(monkeypatch) -> None:
     html = """
     <div class="result">
       <a class="result__a" href="https://www.linkedin.com/in/ana-silva">
-        Ana Silva - Python Trainer | LinkedIn
+        Ana Silva - Freelance Python Trainer | LinkedIn
       </a>
-      <a class="result__snippet">Python trainer and speaker.</a>
+      <a class="result__snippet">Freelance Python trainer and speaker.</a>
     </div>
     <div class="result">
       <a class="result__a" href="https://www.linkedin.com/in/ana-silva">
-        Ana Silva - Python Trainer | LinkedIn
+        Ana Silva - Freelance Python Trainer | LinkedIn
       </a>
       <a class="result__snippet">Duplicate result.</a>
     </div>
@@ -336,9 +336,9 @@ def test_public_web_search_provider_continues_after_request_error(monkeypatch) -
     html = """
     <div class="result">
       <a class="result__a" href="https://www.linkedin.com/in/ana-silva">
-        Ana Silva - Python Trainer | LinkedIn
+        Ana Silva - Freelance Python Trainer | LinkedIn
       </a>
-      <a class="result__snippet">Python trainer and speaker.</a>
+      <a class="result__snippet">Freelance Python trainer and speaker.</a>
     </div>
     """
     calls = {"count": 0}
@@ -365,6 +365,53 @@ def test_public_web_search_provider_continues_after_request_error(monkeypatch) -
     assert candidates[0].nome == "Ana Silva"
 
 
+def test_public_web_search_provider_stops_after_repeated_request_errors(
+    monkeypatch,
+) -> None:
+    calls = {"count": 0}
+
+    def fake_get(*args, **kwargs):
+        calls["count"] += 1
+        raise requests.RequestException("search unavailable")
+
+    monkeypatch.setattr("bot.search.requests.get", fake_get)
+
+    provider = PublicWebSearchProvider(max_results=1)
+
+    candidates = provider.search(make_request())
+
+    assert candidates == []
+    assert calls["count"] == MAX_CONSECUTIVE_PUBLIC_SEARCH_ERRORS
+
+
+def test_public_web_search_provider_uses_bing_safesearch_params(monkeypatch) -> None:
+    captured_params = {}
+
+    class FakeResponse:
+        text = ""
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_get(*args, **kwargs):
+        captured_params.update(kwargs["params"])
+        return FakeResponse()
+
+    monkeypatch.setattr("bot.search.requests.get", fake_get)
+
+    provider = PublicWebSearchProvider(
+        search_url="https://www.bing.com/search",
+        timeout_seconds=1,
+        max_results=1,
+    )
+    provider._fetch_results("Python trainer")
+
+    assert captured_params["q"] == "Python trainer"
+    assert captured_params["adlt"] == "strict"
+    assert captured_params["setlang"] == "pt-PT"
+    assert captured_params["cc"] == "pt"
+
+
 def test_linkedin_profile_result_is_relevant() -> None:
     result = PublicSearchResult(
         title="Ana Silva - Freelance Python Trainer",
@@ -374,9 +421,48 @@ def test_linkedin_profile_result_is_relevant() -> None:
         source_domain="linkedin.com",
     )
 
-    assert is_relevant_public_result(result)
+    assert is_relevant_public_result(result, make_request())
     assert detect_profile_type(result) == ProfileType.linkedin_profile
     assert is_probably_linkedin_profile(result) is True
+    assert has_freelance_signal(result)
+    assert has_training_experience_signal(result)
+    assert has_topic_experience_signal(result, make_request())
+
+
+def test_linkedin_profile_without_freelance_signal_is_not_relevant() -> None:
+    result = PublicSearchResult(
+        title="Ana Silva - Python Trainer",
+        url="https://www.linkedin.com/in/ana-silva",
+        snippet="Python trainer and speaker.",
+        matched_query="site:linkedin.com/in Python trainer",
+        source_domain="linkedin.com",
+    )
+
+    assert not is_relevant_public_result(result, make_request())
+
+
+def test_linkedin_profile_without_topic_evidence_is_not_relevant() -> None:
+    result = PublicSearchResult(
+        title="Ana Silva - Freelance JavaScript Trainer",
+        url="https://www.linkedin.com/in/ana-silva",
+        snippet="Freelance trainer and speaker.",
+        matched_query="site:linkedin.com/in Python freelancer trainer",
+        source_domain="linkedin.com",
+    )
+
+    assert not is_relevant_public_result(result, make_request())
+
+
+def test_company_linkedin_page_is_not_relevant_even_with_training_terms() -> None:
+    result = PublicSearchResult(
+        title="Empresa X | LinkedIn",
+        url="https://www.linkedin.com/company/empresa-x",
+        snippet="Freelance Python training and consulting company.",
+        matched_query="site:linkedin.com/company Python training",
+        source_domain="linkedin.com",
+    )
+
+    assert not is_relevant_public_result(result, make_request())
 
 
 def test_company_page_result_is_classified_as_company_page() -> None:
@@ -414,7 +500,7 @@ def test_job_board_result_is_not_relevant() -> None:
     )
 
     assert is_job_board_result(result)
-    assert not is_relevant_public_result(result)
+    assert not is_relevant_public_result(result, make_request())
     assert detect_profile_type(result) == ProfileType.job_board
 
 

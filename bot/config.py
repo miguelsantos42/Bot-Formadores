@@ -17,6 +17,7 @@ class Settings:
     public_search_url: str
     public_search_timeout_seconds: int
     public_search_max_results: int
+    public_search_fallback_to_mock: bool = True
 
 
 def get_settings() -> Settings:
@@ -30,4 +31,11 @@ def get_settings() -> Settings:
         ),
         public_search_timeout_seconds=int(os.getenv("PUBLIC_SEARCH_TIMEOUT_SECONDS", "10")),
         public_search_max_results=int(os.getenv("PUBLIC_SEARCH_MAX_RESULTS", "10")),
+        public_search_fallback_to_mock=parse_bool(
+            os.getenv("PUBLIC_SEARCH_FALLBACK_TO_MOCK", "true")
+        ),
     )
+
+
+def parse_bool(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}

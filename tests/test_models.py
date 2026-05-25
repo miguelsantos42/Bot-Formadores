@@ -29,6 +29,16 @@ def test_training_request_accepts_required_fields() -> None:
     assert request.numero_participantes == 25
 
 
+def test_training_request_accepts_short_acronym_topic() -> None:
+    request = TrainingRequest(
+        tema_formacao="AI",
+        area_interna="Tecnologia",
+        descricao_contexto="Sessao interna para membros da JuniFEUP.",
+    )
+
+    assert request.tema_formacao == "AI"
+
+
 def test_training_request_rejects_invalid_participant_count() -> None:
     with pytest.raises(ValidationError):
         TrainingRequest(
